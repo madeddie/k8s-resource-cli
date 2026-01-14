@@ -1,0 +1,291 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/metrics/pkg/client/clientset/versioned"
+)
+
+const (
+	OutputTypeUsage      = "usage"
+	OutputTypeRequests   = "requests"
+	OutputTypeMaxRequests = "max-requests"
+)
+
+type ResourceMetrics struct {
+	CPU    int64 // in millicores
+	Memory int64 // in bytes
+}
+
+type DeploymentMetrics struct {
+	Name         string
+	Namespace    string
+	Replicas     int32
+	Usage        ResourceMetrics
+	Requests     ResourceMetrics
+	MaxRequests  ResourceMetrics
+	HPAMaxReplicas int32
+}
+
+func main() {
+	var outputType string
+	var namespace string
+	var deploymentName string
+	var kubeconfig string
+
+	// Default kubeconfig path
+	if home := os.Getenv("HOME"); home != "" {
+		kubeconfig = filepath.Join(home, ".kube", "config")
+	}
+
+	flag.StringVar(&outputType, "output", OutputTypeRequests, "Output type: usage, requests, or max-requests")
+	flag.StringVar(&namespace, "namespace", "", "Namespace (defaults to current context or 'default')")
+	flag.StringVar(&deploymentName, "deployment", "", "Deployment name (defaults to all deployments)")
+	flag.StringVar(&kubeconfig, "kubeconfig", kubeconfig, "Path to kubeconfig file")
+	flag.Parse()
+
+	// Validate output type
+	if outputType != OutputTypeUsage && outputType != OutputTypeRequests && outputType != OutputTypeMaxRequests {
+		fmt.Fprintf(os.Stderr, "Error: Invalid output type '%s'. Must be 'usage', 'requests', or 'max-requests'\n", outputType)
+		os.Exit(1)
+	}
+
+	// Build config from kubeconfig
+	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error building kubeconfig: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Create kubernetes clientset
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating Kubernetes client: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Create metrics clientset (for usage metrics)
+	metricsClientset, err := versioned.NewForConfig(config)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating metrics client: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Get namespace from kubeconfig if not specified
+	if namespace == "" {
+		namespace, err = getNamespaceFromKubeconfig(kubeconfig)
+		if err != nil {
+			namespace = "default"
+		}
+	}
+
+	ctx := context.Background()
+
+	// Get deployments
+	var deployments []DeploymentMetrics
+	if deploymentName != "" {
+		// Get specific deployment
+		deployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting deployment %s: %v\n", deploymentName, err)
+			os.Exit(1)
+		}
+		metrics, err := getDeploymentMetrics(ctx, clientset, metricsClientset, deployment.Namespace, deployment.Name, *deployment.Spec.Replicas)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting metrics for deployment %s: %v\n", deploymentName, err)
+			os.Exit(1)
+		}
+		deployments = append(deployments, metrics)
+	} else {
+		// Get all deployments in namespace
+		deploymentList, err := clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error listing deployments: %v\n", err)
+			os.Exit(1)
+		}
+		for _, deployment := range deploymentList.Items {
+			metrics, err := getDeploymentMetrics(ctx, clientset, metricsClientset, deployment.Namespace, deployment.Name, *deployment.Spec.Replicas)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for deployment %s: %v\n", deployment.Name, err)
+				continue
+			}
+			deployments = append(deployments, metrics)
+		}
+	}
+
+	// Output results
+	printResults(deployments, outputType)
+}
+
+func getNamespaceFromKubeconfig(kubeconfigPath string) (string, error) {
+	config, err := clientcmd.LoadFromFile(kubeconfigPath)
+	if err != nil {
+		return "", err
+	}
+
+	if config.CurrentContext == "" {
+		return "", fmt.Errorf("no current context")
+	}
+
+	context, ok := config.Contexts[config.CurrentContext]
+	if !ok {
+		return "", fmt.Errorf("current context not found")
+	}
+
+	if context.Namespace != "" {
+		return context.Namespace, nil
+	}
+
+	return "default", nil
+}
+
+func getDeploymentMetrics(ctx context.Context, clientset *kubernetes.Clientset, metricsClientset *versioned.Clientset, namespace, name string, replicas int32) (DeploymentMetrics, error) {
+	dm := DeploymentMetrics{
+		Name:      name,
+		Namespace: namespace,
+		Replicas:  replicas,
+	}
+
+	// Get pods for this deployment
+	labelSelector := fmt.Sprintf("app=%s", name)
+	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		return dm, fmt.Errorf("error listing pods: %w", err)
+	}
+
+	// If no pods found, try with alternative label selector
+	if len(pods.Items) == 0 {
+		deployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return dm, fmt.Errorf("error getting deployment: %w", err)
+		}
+
+		if deployment.Spec.Selector != nil && deployment.Spec.Selector.MatchLabels != nil {
+			labelSelector = metav1.FormatLabelSelector(deployment.Spec.Selector)
+			pods, err = clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+				LabelSelector: labelSelector,
+			})
+			if err != nil {
+				return dm, fmt.Errorf("error listing pods with deployment selector: %w", err)
+			}
+		}
+	}
+
+	// Calculate requests from pod specs
+	for _, pod := range pods.Items {
+		for _, container := range pod.Spec.Containers {
+			if cpu := container.Resources.Requests.Cpu(); cpu != nil {
+				dm.Requests.CPU += cpu.MilliValue()
+			}
+			if memory := container.Resources.Requests.Memory(); memory != nil {
+				dm.Requests.Memory += memory.Value()
+			}
+		}
+	}
+
+	// Get current usage from metrics API
+	podMetricsList, err := metricsClientset.MetricsV1beta1().PodMetricses(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err == nil {
+		for _, podMetrics := range podMetricsList.Items {
+			for _, container := range podMetrics.Containers {
+				if cpu := container.Usage.Cpu(); cpu != nil {
+					dm.Usage.CPU += cpu.MilliValue()
+				}
+				if memory := container.Usage.Memory(); memory != nil {
+					dm.Usage.Memory += memory.Value()
+				}
+			}
+		}
+	}
+
+	// Get HPA information
+	hpaList, err := clientset.AutoscalingV1().HorizontalPodAutoscalers(namespace).List(ctx, metav1.ListOptions{})
+	if err == nil {
+		for _, hpa := range hpaList.Items {
+			if hpa.Spec.ScaleTargetRef.Name == name && hpa.Spec.ScaleTargetRef.Kind == "Deployment" {
+				dm.HPAMaxReplicas = hpa.Spec.MaxReplicas
+				// Calculate max requests based on HPA max replicas
+				if dm.HPAMaxReplicas > 0 && len(pods.Items) > 0 {
+					// Get requests per pod (average from current pods)
+					requestsPerPod := ResourceMetrics{
+						CPU:    dm.Requests.CPU / int64(len(pods.Items)),
+						Memory: dm.Requests.Memory / int64(len(pods.Items)),
+					}
+					dm.MaxRequests.CPU = requestsPerPod.CPU * int64(dm.HPAMaxReplicas)
+					dm.MaxRequests.Memory = requestsPerPod.Memory * int64(dm.HPAMaxReplicas)
+				}
+				break
+			}
+		}
+	}
+
+	return dm, nil
+}
+
+func printResults(deployments []DeploymentMetrics, outputType string) {
+	if len(deployments) == 0 {
+		fmt.Println("No deployments found")
+		return
+	}
+
+	fmt.Printf("%-30s %-15s %-15s %-15s\n", "DEPLOYMENT", "NAMESPACE", "CPU", "MEMORY")
+	fmt.Println("================================================================================")
+
+	for _, dm := range deployments {
+		var cpu, memory string
+
+		switch outputType {
+		case OutputTypeUsage:
+			cpu = formatCPU(dm.Usage.CPU)
+			memory = formatMemory(dm.Usage.Memory)
+		case OutputTypeRequests:
+			cpu = formatCPU(dm.Requests.CPU)
+			memory = formatMemory(dm.Requests.Memory)
+		case OutputTypeMaxRequests:
+			if dm.HPAMaxReplicas > 0 {
+				cpu = formatCPU(dm.MaxRequests.CPU)
+				memory = formatMemory(dm.MaxRequests.Memory)
+			} else {
+				cpu = "N/A (no HPA)"
+				memory = "N/A (no HPA)"
+			}
+		}
+
+		fmt.Printf("%-30s %-15s %-15s %-15s\n", dm.Name, dm.Namespace, cpu, memory)
+	}
+}
+
+func formatCPU(milliCores int64) string {
+	if milliCores >= 1000 {
+		return fmt.Sprintf("%.2f cores", float64(milliCores)/1000.0)
+	}
+	return fmt.Sprintf("%dm", milliCores)
+}
+
+func formatMemory(bytes int64) string {
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+	)
+
+	if bytes >= GB {
+		return fmt.Sprintf("%.2f GB", float64(bytes)/float64(GB))
+	} else if bytes >= MB {
+		return fmt.Sprintf("%.2f MB", float64(bytes)/float64(MB))
+	} else if bytes >= KB {
+		return fmt.Sprintf("%.2f KB", float64(bytes)/float64(KB))
+	}
+	return fmt.Sprintf("%d B", bytes)
+}
