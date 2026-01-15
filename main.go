@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"text/tabwriter"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -240,8 +241,11 @@ func printResults(deployments []DeploymentMetrics, outputType string) {
 		return
 	}
 
-	fmt.Printf("%-30s %-15s %-12s %-15s %-15s\n", "DEPLOYMENT", "NAMESPACE", "REPLICAS", "CPU", "MEMORY")
-	fmt.Println("==========================================================================================")
+	// Create a tabwriter for aligned output
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+
+	// Print header
+	fmt.Fprintln(w, "DEPLOYMENT\tNAMESPACE\tREPLICAS\tCPU\tMEMORY")
 
 	var totalCPU, totalMemory int64
 
@@ -284,12 +288,14 @@ func printResults(deployments []DeploymentMetrics, outputType string) {
 			}
 		}
 
-		fmt.Printf("%-30s %-15s %-12s %-15s %-15s\n", dm.Name, dm.Namespace, replicas, cpu, memory)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", dm.Name, dm.Namespace, replicas, cpu, memory)
 	}
 
 	// Print totals row
-	fmt.Println("==========================================================================================")
-	fmt.Printf("%-30s %-15s %-12s %-15s %-15s\n", "TOTAL", "", "", formatCPU(totalCPU), formatMemory(totalMemory))
+	fmt.Fprintf(w, "TOTAL\t\t\t%s\t%s\n", formatCPU(totalCPU), formatMemory(totalMemory))
+
+	// Flush the writer to output everything
+	w.Flush()
 }
 
 func formatCPU(milliCores int64) string {

@@ -127,13 +127,11 @@ The `REPLICAS` column shows different information based on the output type:
 
 Output:
 ```
-DEPLOYMENT                     NAMESPACE       REPLICAS     CPU             MEMORY
-==========================================================================================
-web-frontend                   production      2/5          1.50 cores      2.50 GB
-api-backend                    production      3/10         3.20 cores      4.00 GB
-worker                         production      1/1          800m            1.20 GB
-==========================================================================================
-TOTAL                                                       5.50 cores      7.70 GB
+DEPLOYMENT    NAMESPACE    REPLICAS   CPU           MEMORY
+web-frontend  production   2/5        1.50 cores    2.50 GB
+api-backend   production   3/10       3.20 cores    4.00 GB
+worker        production   1/1        800m          1.20 GB
+TOTAL                                 5.50 cores    7.70 GB
 ```
 
 ### Example 2: View resource requests for a specific deployment
@@ -144,11 +142,9 @@ TOTAL                                                       5.50 cores      7.70
 
 Output:
 ```
-DEPLOYMENT                     NAMESPACE       REPLICAS     CPU             MEMORY
-==========================================================================================
-web-frontend                   production      2/5          2.00 cores      4.00 GB
-==========================================================================================
-TOTAL                                                       2.00 cores      4.00 GB
+DEPLOYMENT    NAMESPACE    REPLICAS   CPU          MEMORY
+web-frontend  production   2/5        2.00 cores   4.00 GB
+TOTAL                                 2.00 cores   4.00 GB
 ```
 
 ### Example 3: View max requests based on HPA
@@ -159,12 +155,10 @@ TOTAL                                                       2.00 cores      4.00
 
 Output:
 ```
-DEPLOYMENT                     NAMESPACE       REPLICAS     CPU             MEMORY
-==========================================================================================
-web-frontend                   production      10           10.00 cores     20.00 GB
-api-backend                    production      3            3.20 cores      4.00 GB
-==========================================================================================
-TOTAL                                                       13.20 cores     24.00 GB
+DEPLOYMENT    NAMESPACE    REPLICAS   CPU           MEMORY
+web-frontend  production   10         10.00 cores   20.00 GB
+api-backend   production   3          3.20 cores    4.00 GB
+TOTAL                                 13.20 cores   24.00 GB
 ```
 
 Note: `web-frontend` has an HPA with max replicas of 10, showing scaled-up resources. `api-backend` has no HPA, so it shows current resource requests with max replicas being the desired replicas (3).
