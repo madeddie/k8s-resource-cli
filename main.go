@@ -119,6 +119,7 @@ func main() {
 	var porterBaseURL string
 	var debug bool
 	var showVersion bool
+	var allNamespaces bool
 
 	// Default kubeconfig path: KUBECONFIG env var, then ~/.kube/config
 	defaultKubeconfig := os.Getenv("KUBECONFIG")
@@ -138,6 +139,8 @@ func main() {
 	flag.StringVar(&porterProjectID, "porter-project-id", os.Getenv("PORTER_PROJECT_ID"), "Porter project ID (or set PORTER_PROJECT_ID env var)")
 	flag.StringVar(&porterBaseURL, "porter-url", getEnvDefault("PORTER_BASE_URL", "https://dashboard.porter.run"), "Porter API base URL")
 	flag.BoolVar(&debug, "debug", false, "Enable debug output")
+	flag.BoolVar(&allNamespaces, "A", false, "List resources across all namespaces")
+	flag.BoolVar(&allNamespaces, "all-namespaces", false, "List resources across all namespaces")
 	flag.Parse()
 
 	// Handle version flag
@@ -149,6 +152,12 @@ func main() {
 	// Validate output type
 	if outputType != OutputTypeUsage && outputType != OutputTypeRequests && outputType != OutputTypeMaxRequests {
 		fmt.Fprintf(os.Stderr, "Error: Invalid output type '%s'. Must be 'usage', 'requests', or 'max-requests'\n", outputType)
+		os.Exit(1)
+	}
+
+	// Validate mutually exclusive flags (Kubernetes mode only)
+	if !usePorter && namespace != "" && allNamespaces {
+		fmt.Fprintf(os.Stderr, "Error: -namespace and -A/--all-namespaces flags are mutually exclusive\n")
 		os.Exit(1)
 	}
 
@@ -205,8 +214,12 @@ func main() {
 			os.Exit(1)
 		}
 
-		// Get namespace from kubeconfig if not specified
-		if namespace == "" {
+		// Handle all-namespaces flag or get namespace from kubeconfig
+		if allNamespaces {
+			// Empty string means all namespaces in Kubernetes API
+			namespace = ""
+		} else if namespace == "" {
+			// Get namespace from kubeconfig if not specified
 			namespace, err = getNamespaceFromKubeconfig(kubeconfig)
 			if err != nil {
 				namespace = "default"
@@ -215,18 +228,44 @@ func main() {
 
 		// Get deployments
 		if deploymentName != "" {
-			// Get specific deployment
-			deployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error getting deployment %s: %v\n", deploymentName, err)
-				os.Exit(1)
+			if allNamespaces {
+				// When using -A, search all namespaces for the deployment
+				deploymentList, err := clientset.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error listing deployments: %v\n", err)
+					os.Exit(1)
+				}
+				found := false
+				for _, deployment := range deploymentList.Items {
+					if deployment.Name == deploymentName {
+						found = true
+						metrics, err := getDeploymentMetrics(ctx, clientset, metricsClientset, deployment.Namespace, deployment.Name)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for deployment %s in namespace %s: %v\n",
+								deploymentName, deployment.Namespace, err)
+							continue
+						}
+						deployments = append(deployments, metrics)
+					}
+				}
+				if !found {
+					fmt.Fprintf(os.Stderr, "Error: No deployment named %s found in any namespace\n", deploymentName)
+					os.Exit(1)
+				}
+			} else {
+				// Get specific deployment in specific namespace
+				deployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error getting deployment %s: %v\n", deploymentName, err)
+					os.Exit(1)
+				}
+				metrics, err := getDeploymentMetrics(ctx, clientset, metricsClientset, deployment.Namespace, deployment.Name)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error getting metrics for deployment %s: %v\n", deploymentName, err)
+					os.Exit(1)
+				}
+				deployments = append(deployments, metrics)
 			}
-			metrics, err := getDeploymentMetrics(ctx, clientset, metricsClientset, deployment.Namespace, deployment.Name)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error getting metrics for deployment %s: %v\n", deploymentName, err)
-				os.Exit(1)
-			}
-			deployments = append(deployments, metrics)
 		} else {
 			// Get all deployments in namespace
 			deploymentList, err := clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
