@@ -1,6 +1,6 @@
 # Kubernetes Resource CLI Tool
 
-A CLI tool written in Go that interfaces with the Kubernetes API to retrieve resource requests and resource usage of pods in deployments.
+A vibe-coded CLI tool written in Go that interfaces with the Kubernetes API to retrieve resource requests and resource usage of pods in deployments.
 
 ## Features
 
