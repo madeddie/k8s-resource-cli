@@ -1,6 +1,6 @@
 module github.com/madeddie/k8s-resource-cli
 
-go 1.24.7
+go 1.25.5
 
 require (
 	k8s.io/apimachinery v0.29.0
