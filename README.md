@@ -50,10 +50,13 @@ sudo mv k8s-resource-cli /usr/local/bin/
 ./k8s-resource-cli
 
 # Show current usage for a specific deployment
-./k8s-resource-cli -output usage -deployment my-app
+./k8s-resource-cli --output usage --deployment my-app
 
 # Show max requests based on HPA for all deployments in a namespace
-./k8s-resource-cli -output max-requests -namespace production
+./k8s-resource-cli --output max-requests --namespace production
+
+# Show resource requests for all deployments across all namespaces
+./k8s-resource-cli -A
 ```
 
 ### Command Line Arguments
@@ -62,24 +65,25 @@ sudo mv k8s-resource-cli /usr/local/bin/
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `-output` | Output type: `usage`, `requests`, or `max-requests` | `requests` |
-| `-deployment` | Specific deployment/application name | All deployments/applications |
+| `--output` | Output type: `usage`, `requests`, or `max-requests` | `requests` |
+| `--deployment` | Specific deployment/application name | All deployments/applications |
 
 #### Kubernetes Direct Access
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `-namespace` | Kubernetes namespace to query | Current context namespace or `default` |
-| `-kubeconfig` | Path to kubeconfig file | `$KUBECONFIG` or `~/.kube/config` |
+| `-A`, `--all-namespaces` | List resources across all namespaces | `false` |
+| `--namespace` | Kubernetes namespace to query | Current context namespace or `default` |
+| `--kubeconfig` | Path to kubeconfig file | `$KUBECONFIG` or `~/.kube/config` |
 
 #### Porter API Access
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `-porter` | Enable Porter API mode | `false` |
-| `-porter-token` | Porter API bearer token | `$PORTER_TOKEN` env var |
-| `-porter-project-id` | Porter project ID | `$PORTER_PROJECT_ID` env var |
-| `-porter-url` | Porter API base URL | `https://dashboard.porter.run` |
+| `--porter` | Enable Porter API mode | `false` |
+| `--porter-token` | Porter API bearer token | `$PORTER_TOKEN` env var |
+| `--porter-project-id` | Porter project ID | `$PORTER_PROJECT_ID` env var |
+| `--porter-url` | Porter API base URL | `https://dashboard.porter.run` |
 
 ### Configuration
 
@@ -87,7 +91,7 @@ sudo mv k8s-resource-cli /usr/local/bin/
 
 The tool uses the following precedence order to find the kubeconfig file:
 
-1. Command-line flag: `-kubeconfig /path/to/config` (highest priority)
+1. Command-line flag: `--kubeconfig /path/to/config` (highest priority)
 2. Environment variable: `KUBECONFIG=/path/to/config`
 3. Default location: `~/.kube/config`
 
@@ -95,10 +99,10 @@ Example:
 ```bash
 # Use custom kubeconfig via environment variable
 export KUBECONFIG=/path/to/my/kubeconfig
-./k8s-resource-cli -output requests
+./k8s-resource-cli --output requests
 
 # Override environment variable with command-line flag
-./k8s-resource-cli -kubeconfig /different/path/config
+./k8s-resource-cli --kubeconfig /different/path/config
 ```
 
 **Porter API Configuration**
@@ -109,18 +113,18 @@ To use Porter API mode, you need to provide authentication credentials:
 ```bash
 export PORTER_TOKEN="your-porter-api-token"
 export PORTER_PROJECT_ID="your-project-id"
-./k8s-resource-cli -porter -output requests
+./k8s-resource-cli --porter --output requests
 ```
 
 2. Via command-line flags:
 ```bash
-./k8s-resource-cli -porter -porter-token "your-token" -porter-project-id "12345" -output requests
+./k8s-resource-cli --porter --porter-token "your-token" --porter-project-id "12345" --output requests
 ```
 
 3. For self-hosted Porter instances:
 ```bash
 export PORTER_BASE_URL="https://your-porter-instance.com"
-./k8s-resource-cli -porter -output max-requests
+./k8s-resource-cli --porter --output max-requests
 ```
 
 ### Output Types
@@ -129,21 +133,21 @@ export PORTER_BASE_URL="https://your-porter-instance.com"
 Shows current CPU and memory usage of running pods in the deployment. Requires Metrics Server to be running in your cluster.
 
 ```bash
-./k8s-resource-cli -output usage
+./k8s-resource-cli --output usage
 ```
 
 #### `requests`
 Shows total CPU and memory requests configured for all pods in the deployment.
 
 ```bash
-./k8s-resource-cli -output requests
+./k8s-resource-cli --output requests
 ```
 
 #### `max-requests`
 Shows the total CPU and memory requests if the deployment were scaled to the maximum replicas specified in its HPA (Horizontal Pod Autoscaler). For deployments without an HPA, it shows the current resource requests (same as the `requests` output type).
 
 ```bash
-./k8s-resource-cli -output max-requests
+./k8s-resource-cli --output max-requests
 ```
 
 ### Replicas Column
@@ -162,7 +166,7 @@ The `REPLICAS` column shows different information based on the output type:
 ### Example 1: View current usage for all deployments
 
 ```bash
-./k8s-resource-cli -output usage
+./k8s-resource-cli --output usage
 ```
 
 Output:
@@ -177,7 +181,7 @@ TOTAL                                 5.50 cores    7.70 GB
 ### Example 2: View resource requests for a specific deployment
 
 ```bash
-./k8s-resource-cli -output requests -deployment web-frontend -namespace production
+./k8s-resource-cli --output requests --deployment web-frontend --namespace production
 ```
 
 Output:
@@ -190,7 +194,7 @@ TOTAL                                 2.00 cores   4.00 GB
 ### Example 3: View max requests based on HPA
 
 ```bash
-./k8s-resource-cli -output max-requests -namespace production
+./k8s-resource-cli --output max-requests --namespace production
 ```
 
 Output:
@@ -208,7 +212,7 @@ Note: `web-frontend` has an HPA with max replicas of 10, showing scaled-up resou
 ```bash
 export PORTER_TOKEN="your-api-token"
 export PORTER_PROJECT_ID="12345"
-./k8s-resource-cli -porter -output requests
+./k8s-resource-cli --porter --output requests
 ```
 
 Output:
@@ -223,7 +227,7 @@ TOTAL                                                                  3.50 core
 ### Example 5: View Porter applications max resource requests
 
 ```bash
-./k8s-resource-cli -porter -output max-requests
+./k8s-resource-cli --porter --output max-requests
 ```
 
 Output:
@@ -296,11 +300,11 @@ This ensures compatibility with different labeling conventions.
 ### Porter API errors
 
 **"Error: Porter token required"**
-- Set the `PORTER_TOKEN` environment variable or use `-porter-token` flag
+- Set the `PORTER_TOKEN` environment variable or use `--porter-token` flag
 - Get your token from the Porter dashboard settings
 
 **"Error: Porter project ID required"**
-- Set the `PORTER_PROJECT_ID` environment variable or use `-porter-project-id` flag
+- Set the `PORTER_PROJECT_ID` environment variable or use `--porter-project-id` flag
 - Find your project ID in the Porter dashboard URL or project settings
 
 **"API request failed with status 401"**
