@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is a Go CLI tool that retrieves resource requests and usage metrics for deployments. The tool supports two modes:
 
 1. **Kubernetes Mode** (default): Directly interfaces with the Kubernetes API via kubeconfig
-2. **Porter Mode** (`-porter` flag): Interfaces with the Porter API to retrieve application metrics
+2. **Porter Mode** (`--porter` flag): Interfaces with the Porter API to retrieve application metrics
 
 The tool supports three output modes: current usage, resource requests, and max requests (based on HPA/autoscaling configuration).
 
@@ -31,31 +31,34 @@ go install
 ./k8s-resource-cli
 
 # Show current usage
-./k8s-resource-cli -output usage
+./k8s-resource-cli --output usage
 
 # Show max requests based on HPA
-./k8s-resource-cli -output max-requests
+./k8s-resource-cli --output max-requests
 
 # Filter by namespace or deployment
-./k8s-resource-cli -namespace production -deployment my-app
+./k8s-resource-cli --namespace production --deployment my-app
+
+# Show resources across all namespaces
+./k8s-resource-cli -A
 
 # Use custom kubeconfig
-./k8s-resource-cli -kubeconfig /path/to/config
+./k8s-resource-cli --kubeconfig /path/to/config
 ```
 
 #### Porter Mode
 ```bash
 # Show resource requests for all Porter applications
-./k8s-resource-cli -porter -porter-project-id 12345
+./k8s-resource-cli --porter --porter-project-id 12345
 
 # Filter by specific application
-./k8s-resource-cli -porter -porter-project-id 12345 -deployment my-app
+./k8s-resource-cli --porter --porter-project-id 12345 --deployment my-app
 
 # Use custom Porter API URL
-./k8s-resource-cli -porter -porter-project-id 12345 -porter-url https://custom.porter.run
+./k8s-resource-cli --porter --porter-project-id 12345 --porter-url https://custom.porter.run
 
 # Enable debug mode to see raw API responses
-./k8s-resource-cli -porter -porter-project-id 12345 -debug
+./k8s-resource-cli --porter --porter-project-id 12345 --debug
 ```
 
 #### Environment Variables
@@ -153,7 +156,7 @@ The entire application is in `main.go`. All logic is contained in one file with 
 
 ### Output Modes
 
-The tool has three output types controlled by the `-output` flag:
+The tool has three output types controlled by the `--output` flag:
 
 1. **usage** - Shows current CPU/memory usage from Metrics Server
 2. **requests** - Shows resource requests from pod specs
