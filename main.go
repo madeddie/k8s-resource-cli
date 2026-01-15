@@ -40,15 +40,18 @@ func main() {
 	var deploymentName string
 	var kubeconfig string
 
-	// Default kubeconfig path
-	if home := os.Getenv("HOME"); home != "" {
-		kubeconfig = filepath.Join(home, ".kube", "config")
+	// Default kubeconfig path: KUBECONFIG env var, then ~/.kube/config
+	defaultKubeconfig := os.Getenv("KUBECONFIG")
+	if defaultKubeconfig == "" {
+		if home := os.Getenv("HOME"); home != "" {
+			defaultKubeconfig = filepath.Join(home, ".kube", "config")
+		}
 	}
 
 	flag.StringVar(&outputType, "output", OutputTypeRequests, "Output type: usage, requests, or max-requests")
 	flag.StringVar(&namespace, "namespace", "", "Namespace (defaults to current context or 'default')")
 	flag.StringVar(&deploymentName, "deployment", "", "Deployment name (defaults to all deployments)")
-	flag.StringVar(&kubeconfig, "kubeconfig", kubeconfig, "Path to kubeconfig file")
+	flag.StringVar(&kubeconfig, "kubeconfig", defaultKubeconfig, "Path to kubeconfig file")
 	flag.Parse()
 
 	// Validate output type

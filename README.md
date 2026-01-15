@@ -61,7 +61,27 @@ sudo mv k8s-resource-cli /usr/local/bin/
 | `-output` | Output type: `usage`, `requests`, or `max-requests` | `requests` |
 | `-namespace` | Kubernetes namespace to query | Current context namespace or `default` |
 | `-deployment` | Specific deployment name | All deployments in namespace |
-| `-kubeconfig` | Path to kubeconfig file | `~/.kube/config` |
+| `-kubeconfig` | Path to kubeconfig file | `$KUBECONFIG` or `~/.kube/config` |
+
+### Configuration
+
+**Kubeconfig File Resolution**
+
+The tool uses the following precedence order to find the kubeconfig file:
+
+1. Command-line flag: `-kubeconfig /path/to/config` (highest priority)
+2. Environment variable: `KUBECONFIG=/path/to/config`
+3. Default location: `~/.kube/config`
+
+Example:
+```bash
+# Use custom kubeconfig via environment variable
+export KUBECONFIG=/path/to/my/kubeconfig
+./k8s-resource-cli -output requests
+
+# Override environment variable with command-line flag
+./k8s-resource-cli -kubeconfig /different/path/config
+```
 
 ### Output Types
 
