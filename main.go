@@ -449,13 +449,13 @@ func getPorterApplicationMetrics(ctx context.Context, client *PorterClient, appN
 
 		// Show progress indicator with spinner
 		spinner := spinnerChars[i%len(spinnerChars)]
-		fmt.Fprintf(os.Stderr, "\r%s Loading application %d/%d: %s...%s", spinner, i+1, totalApps, app.Name, strings.Repeat(" ", 50))
+		fmt.Fprintf(os.Stderr, "\r%s Loading application %d/%d: %s...\033[K", spinner, i+1, totalApps, app.Name)
 
 		// Get application details
 		detail, err := client.GetApplication(ctx, app.ID)
 		if err != nil {
 			// Clear spinner line before showing warning
-			fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
+			fmt.Fprintf(os.Stderr, "\r\033[K")
 			fmt.Fprintf(os.Stderr, "Warning: Error getting application %s: %v\n", app.Name, err)
 			continue
 		}
@@ -478,7 +478,7 @@ func getPorterApplicationMetrics(ctx context.Context, client *PorterClient, appN
 			}
 		} else if client.Debug {
 			// Clear spinner line before showing debug message
-			fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
+			fmt.Fprintf(os.Stderr, "\r\033[K")
 			fmt.Fprintf(os.Stderr, "DEBUG - Error getting deployment target %s: %v\n", detail.DeploymentTargetID, err)
 		}
 
@@ -517,7 +517,7 @@ func getPorterApplicationMetrics(ctx context.Context, client *PorterClient, appN
 	}
 
 	// Clear the progress indicator
-	fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
+	fmt.Fprintf(os.Stderr, "\r\033[K")
 
 	return deployments, nil
 }
