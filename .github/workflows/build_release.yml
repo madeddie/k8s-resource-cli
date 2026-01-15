@@ -1,4 +1,4 @@
-name: Build Binaries
+name: Build and Release Binaries
 
 on:
   push:
@@ -67,6 +67,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
