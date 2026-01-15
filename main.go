@@ -157,7 +157,7 @@ func main() {
 
 	// Validate mutually exclusive flags (Kubernetes mode only)
 	if !usePorter && namespace != "" && allNamespaces {
-		fmt.Fprintf(os.Stderr, "Error: -namespace and -A/--all-namespaces flags are mutually exclusive\n")
+		fmt.Fprintf(os.Stderr, "Error: --namespace and -A/--all-namespaces flags are mutually exclusive\n")
 		os.Exit(1)
 	}
 
@@ -167,11 +167,11 @@ func main() {
 	if usePorter {
 		// Use Porter API
 		if porterToken == "" {
-			fmt.Fprintf(os.Stderr, "Error: Porter token required. Set PORTER_TOKEN env var or use -porter-token flag\n")
+			fmt.Fprintf(os.Stderr, "Error: Porter token required. Set PORTER_TOKEN env var or use --porter-token flag\n")
 			os.Exit(1)
 		}
 		if porterProjectID == "" {
-			fmt.Fprintf(os.Stderr, "Error: Porter project ID required. Set PORTER_PROJECT_ID env var or use -porter-project-id flag\n")
+			fmt.Fprintf(os.Stderr, "Error: Porter project ID required. Set PORTER_PROJECT_ID env var or use --porter-project-id flag\n")
 			os.Exit(1)
 		}
 
