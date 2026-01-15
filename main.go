@@ -18,6 +18,9 @@ import (
 	"k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
+// version is set at build time using -ldflags
+var version = "dev"
+
 const (
 	OutputTypeUsage      = "usage"
 	OutputTypeRequests   = "requests"
@@ -115,6 +118,7 @@ func main() {
 	var porterProjectID string
 	var porterBaseURL string
 	var debug bool
+	var showVersion bool
 
 	// Default kubeconfig path: KUBECONFIG env var, then ~/.kube/config
 	defaultKubeconfig := os.Getenv("KUBECONFIG")
@@ -124,6 +128,7 @@ func main() {
 		}
 	}
 
+	flag.BoolVar(&showVersion, "version", false, "Show version and exit")
 	flag.StringVar(&outputType, "output", OutputTypeRequests, "Output type: usage, requests, or max-requests")
 	flag.StringVar(&namespace, "namespace", "", "Namespace (defaults to current context or 'default')")
 	flag.StringVar(&deploymentName, "deployment", "", "Deployment name (defaults to all deployments)")
@@ -134,6 +139,12 @@ func main() {
 	flag.StringVar(&porterBaseURL, "porter-url", getEnvDefault("PORTER_BASE_URL", "https://dashboard.porter.run"), "Porter API base URL")
 	flag.BoolVar(&debug, "debug", false, "Enable debug output")
 	flag.Parse()
+
+	// Handle version flag
+	if showVersion {
+		fmt.Println(version)
+		os.Exit(0)
+	}
 
 	// Validate output type
 	if outputType != OutputTypeUsage && outputType != OutputTypeRequests && outputType != OutputTypeMaxRequests {
