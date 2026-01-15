@@ -80,7 +80,7 @@ Shows total CPU and memory requests configured for all pods in the deployment.
 ```
 
 #### `max-requests`
-Shows the total CPU and memory requests if the deployment were scaled to the maximum replicas specified in its HPA (Horizontal Pod Autoscaler). Only applicable for deployments with an HPA configured.
+Shows the total CPU and memory requests if the deployment were scaled to the maximum replicas specified in its HPA (Horizontal Pod Autoscaler). For deployments without an HPA, it shows the current resource requests (same as the `requests` output type).
 
 ```bash
 ./k8s-resource-cli -output max-requests
@@ -131,10 +131,12 @@ Output:
 DEPLOYMENT                     NAMESPACE       CPU             MEMORY
 ================================================================================
 web-frontend                   production      10.00 cores     20.00 GB
-api-backend                    production      N/A (no HPA)    N/A (no HPA)
+api-backend                    production      3.20 cores      4.00 GB
 ================================================================================
-TOTAL                                          10.00 cores     20.00 GB
+TOTAL                                          13.20 cores     24.00 GB
 ```
+
+Note: `web-frontend` has an HPA with max replicas configured, showing scaled-up resources. `api-backend` has no HPA, so it shows current resource requests.
 
 ## How It Works
 

@@ -265,8 +265,11 @@ func printResults(deployments []DeploymentMetrics, outputType string) {
 				totalCPU += dm.MaxRequests.CPU
 				totalMemory += dm.MaxRequests.Memory
 			} else {
-				cpu = "N/A (no HPA)"
-				memory = "N/A (no HPA)"
+				// No HPA, use current requests as max
+				cpu = formatCPU(dm.Requests.CPU)
+				memory = formatMemory(dm.Requests.Memory)
+				totalCPU += dm.Requests.CPU
+				totalMemory += dm.Requests.Memory
 			}
 		}
 
