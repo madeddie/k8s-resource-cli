@@ -46,43 +46,63 @@ type PorterApplication struct {
 	Name string `json:"name"`
 }
 
+type PorterListApplicationsResponse struct {
+	Applications []PorterApplication `json:"applications"`
+}
+
 type PorterApplicationDetail struct {
-	ID                 string                    `json:"id"`
-	Name               string                    `json:"name"`
-	DeploymentTargetID string                    `json:"deployment_target_id"`
-	Services           map[string]PorterService  `json:"services"`
+	ID                 string          `json:"id"`
+	Name               string          `json:"name"`
+	DeploymentTargetID string          `json:"deployment_target_id"`
+	Services           []PorterService `json:"services"`
 }
 
 type PorterService struct {
-	Name      string                 `json:"name"`
-	Type      string                 `json:"type"`
-	Config    PorterServiceConfig    `json:"config"`
-	Instances PorterServiceInstances `json:"instances"`
+	Name         string                `json:"name"`
+	Type         string                `json:"type"`
+	CPUCores     float64               `json:"cpu_cores"`
+	RAMMegabytes int64                 `json:"ram_megabytes"`
+	Instances    int32                 `json:"instances"`
+	Autoscaling  *PorterAutoscaling    `json:"autoscaling,omitempty"`
 }
 
-type PorterServiceConfig struct {
-	Resources PorterResources `json:"resources"`
+type PorterAutoscaling struct {
+	Enabled      bool  `json:"enabled"`
+	MinInstances int32 `json:"min_instances"`
+	MaxInstances int32 `json:"max_instances"`
 }
 
-type PorterResources struct {
-	CPU    PorterResourceValue `json:"cpu"`
-	Memory PorterResourceValue `json:"memory"`
+type PorterDeploymentTarget struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	ClusterID     int    `json:"cluster_id"`
+	CloudProvider string `json:"cloud_provider"`
+	IsPreview     bool   `json:"is_preview"`
 }
 
-type PorterResourceValue struct {
-	Value string `json:"value"`
+type PorterListDeploymentTargetsResponse struct {
+	DeploymentTargets []PorterDeploymentTarget `json:"deployment_targets"`
 }
 
-type PorterServiceInstances struct {
-	Min int32 `json:"min"`
-	Max int32 `json:"max"`
+type PorterCluster struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+type PorterListClustersResponse struct {
+	Clusters []PorterCluster `json:"clusters"`
 }
 
 type PorterClient struct {
-	BaseURL    string
-	Token      string
-	ProjectID  string
-	HTTPClient *http.Client
+	BaseURL                 string
+	Token                   string
+	ProjectID               string
+	HTTPClient              *http.Client
+	Debug                   bool
+	deploymentTargetCache   map[string]*PorterDeploymentTarget
+	deploymentTargetsLoaded bool
+	clusterCache            map[int]*PorterCluster
+	clustersLoaded          bool
 }
 
 func main() {
@@ -94,6 +114,7 @@ func main() {
 	var porterToken string
 	var porterProjectID string
 	var porterBaseURL string
+	var debug bool
 
 	// Default kubeconfig path: KUBECONFIG env var, then ~/.kube/config
 	defaultKubeconfig := os.Getenv("KUBECONFIG")
@@ -111,6 +132,7 @@ func main() {
 	flag.StringVar(&porterToken, "porter-token", os.Getenv("PORTER_TOKEN"), "Porter API token (or set PORTER_TOKEN env var)")
 	flag.StringVar(&porterProjectID, "porter-project-id", os.Getenv("PORTER_PROJECT_ID"), "Porter project ID (or set PORTER_PROJECT_ID env var)")
 	flag.StringVar(&porterBaseURL, "porter-url", getEnvDefault("PORTER_BASE_URL", "https://dashboard.porter.run"), "Porter API base URL")
+	flag.BoolVar(&debug, "debug", false, "Enable debug output")
 	flag.Parse()
 
 	// Validate output type
@@ -134,10 +156,13 @@ func main() {
 		}
 
 		client := &PorterClient{
-			BaseURL:    porterBaseURL,
-			Token:      porterToken,
-			ProjectID:  porterProjectID,
-			HTTPClient: &http.Client{},
+			BaseURL:               porterBaseURL,
+			Token:                 porterToken,
+			ProjectID:             porterProjectID,
+			HTTPClient:            &http.Client{},
+			Debug:                 debug,
+			deploymentTargetCache: make(map[string]*PorterDeploymentTarget),
+			clusterCache:          make(map[int]*PorterCluster),
 		}
 
 		var err error
@@ -210,7 +235,7 @@ func main() {
 	}
 
 	// Output results
-	printResults(deployments, outputType)
+	printResults(deployments, outputType, usePorter)
 }
 
 func getNamespaceFromKubeconfig(kubeconfigPath string) (string, error) {
@@ -319,7 +344,7 @@ func getDeploymentMetrics(ctx context.Context, clientset *kubernetes.Clientset, 
 	return dm, nil
 }
 
-func printResults(deployments []DeploymentMetrics, outputType string) {
+func printResults(deployments []DeploymentMetrics, outputType string, usePorter bool) {
 	if len(deployments) == 0 {
 		fmt.Println("No deployments found")
 		return
@@ -329,7 +354,11 @@ func printResults(deployments []DeploymentMetrics, outputType string) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 
 	// Print header
-	fmt.Fprintln(w, "DEPLOYMENT\tNAMESPACE\tREPLICAS\tCPU\tMEMORY")
+	namespaceHeader := "NAMESPACE"
+	if usePorter {
+		namespaceHeader = "TARGET"
+	}
+	fmt.Fprintf(w, "DEPLOYMENT\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
 
 	var totalCPU, totalMemory int64
 
@@ -398,56 +427,92 @@ func getPorterApplicationMetrics(ctx context.Context, client *PorterClient, appN
 
 	var deployments []DeploymentMetrics
 
-	for _, app := range apps {
+	totalApps := len(apps)
+	spinnerChars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+	for i, app := range apps {
 		// Skip if filtering by name
 		if appName != "" && app.Name != appName {
 			continue
 		}
 
+		// Show progress indicator with spinner
+		spinner := spinnerChars[i%len(spinnerChars)]
+		fmt.Fprintf(os.Stderr, "\r%s Loading application %d/%d: %s...%s", spinner, i+1, totalApps, app.Name, strings.Repeat(" ", 50))
+
 		// Get application details
 		detail, err := client.GetApplication(ctx, app.ID)
 		if err != nil {
+			// Clear spinner line before showing warning
+			fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
 			fmt.Fprintf(os.Stderr, "Warning: Error getting application %s: %v\n", app.Name, err)
 			continue
 		}
 
+		// Get deployment target info for cluster name
+		clusterName := detail.DeploymentTargetID // fallback to ID
+		if target, err := client.GetDeploymentTarget(ctx, detail.DeploymentTargetID); err == nil {
+			if target.Name != "" {
+				clusterName = target.Name
+
+				// Check if we need to prefix with cluster name
+				if target.ClusterID != 0 {
+					if cluster, err := client.GetCluster(ctx, target.ClusterID); err == nil && cluster.Name != "" {
+						// Check if cluster name is already in the deployment target name
+						if !strings.HasPrefix(clusterName, cluster.Name) {
+							clusterName = cluster.Name + "-" + clusterName
+						}
+					}
+				}
+			}
+		} else if client.Debug {
+			// Clear spinner line before showing debug message
+			fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
+			fmt.Fprintf(os.Stderr, "DEBUG - Error getting deployment target %s: %v\n", detail.DeploymentTargetID, err)
+		}
+
 		// Process each service in the application
-		for serviceName, service := range detail.Services {
+		for _, service := range detail.Services {
+			// Determine min and max replicas
+			minReplicas := service.Instances
+			maxReplicas := service.Instances
+			if service.Autoscaling != nil && service.Autoscaling.Enabled {
+				minReplicas = service.Autoscaling.MinInstances
+				maxReplicas = service.Autoscaling.MaxInstances
+			}
+
 			dm := DeploymentMetrics{
-				Name:            fmt.Sprintf("%s-%s", app.Name, serviceName),
-				Namespace:       detail.DeploymentTargetID,
-				CurrentReplicas: service.Instances.Min,
-				DesiredReplicas: service.Instances.Min,
-				MaxReplicas:     service.Instances.Max,
+				Name:            fmt.Sprintf("%s-%s", app.Name, service.Name),
+				Namespace:       clusterName,
+				CurrentReplicas: service.Instances,
+				DesiredReplicas: minReplicas,
+				MaxReplicas:     maxReplicas,
 			}
 
-			// Parse CPU and memory resources
-			cpuMillis, err := parseResourceValue(service.Config.Resources.CPU.Value, true)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: Error parsing CPU for %s: %v\n", dm.Name, err)
-			}
-			memoryBytes, err := parseResourceValue(service.Config.Resources.Memory.Value, false)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: Error parsing memory for %s: %v\n", dm.Name, err)
-			}
+			// Convert CPU cores to millicores and memory MB to bytes
+			cpuMillis := int64(service.CPUCores * 1000)
+			memoryBytes := service.RAMMegabytes * 1024 * 1024
 
-			// Calculate current requests (min replicas)
-			dm.Requests.CPU = cpuMillis * int64(dm.DesiredReplicas)
-			dm.Requests.Memory = memoryBytes * int64(dm.DesiredReplicas)
+			// Calculate current requests (current replicas)
+			dm.Requests.CPU = cpuMillis * int64(service.Instances)
+			dm.Requests.Memory = memoryBytes * int64(service.Instances)
 
 			// Calculate max requests (max replicas)
-			dm.MaxRequests.CPU = cpuMillis * int64(dm.MaxReplicas)
-			dm.MaxRequests.Memory = memoryBytes * int64(dm.MaxReplicas)
+			dm.MaxRequests.CPU = cpuMillis * int64(maxReplicas)
+			dm.MaxRequests.Memory = memoryBytes * int64(maxReplicas)
 
 			deployments = append(deployments, dm)
 		}
 	}
 
+	// Clear the progress indicator
+	fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
+
 	return deployments, nil
 }
 
 func (c *PorterClient) ListApplications(ctx context.Context) ([]PorterApplication, error) {
-	url := fmt.Sprintf("%s/api/v2/alpha/projects/%s/applications", c.BaseURL, c.ProjectID)
+	url := fmt.Sprintf("%s/api/v2/alpha/projects/%s/applications?limit=100", c.BaseURL, c.ProjectID)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -468,12 +533,23 @@ func (c *PorterClient) ListApplications(ctx context.Context) ([]PorterApplicatio
 		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	var apps []PorterApplication
-	if err := json.NewDecoder(resp.Body).Decode(&apps); err != nil {
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Print debug output if enabled
+	if c.Debug {
+		fmt.Fprintf(os.Stderr, "DEBUG - ListApplications Raw Response:\n%s\n\n", string(body))
+	}
+
+	var response PorterListApplicationsResponse
+	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	return apps, nil
+	return response.Applications, nil
 }
 
 func (c *PorterClient) GetApplication(ctx context.Context, appID string) (*PorterApplicationDetail, error) {
@@ -498,12 +574,151 @@ func (c *PorterClient) GetApplication(ctx context.Context, appID string) (*Porte
 		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Print debug output if enabled
+	if c.Debug {
+		fmt.Fprintf(os.Stderr, "DEBUG - GetApplication(%s) Raw Response:\n%s\n\n", appID, string(body))
+	}
+
 	var app PorterApplicationDetail
-	if err := json.NewDecoder(resp.Body).Decode(&app); err != nil {
+	if err := json.Unmarshal(body, &app); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	return &app, nil
+}
+
+func (c *PorterClient) GetDeploymentTarget(ctx context.Context, targetID string) (*PorterDeploymentTarget, error) {
+	// Load all deployment targets if not already loaded
+	if !c.deploymentTargetsLoaded {
+		if err := c.loadDeploymentTargets(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	// Return from cache
+	if target, ok := c.deploymentTargetCache[targetID]; ok {
+		return target, nil
+	}
+
+	return nil, fmt.Errorf("deployment target %s not found", targetID)
+}
+
+func (c *PorterClient) loadDeploymentTargets(ctx context.Context) error {
+	url := fmt.Sprintf("%s/api/v2/projects/%s/deployment-targets", c.BaseURL, c.ProjectID)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Print debug output if enabled
+	if c.Debug {
+		fmt.Fprintf(os.Stderr, "DEBUG - ListDeploymentTargets Raw Response:\n%s\n\n", string(body))
+	}
+
+	var response PorterListDeploymentTargetsResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	// Cache all deployment targets
+	for i := range response.DeploymentTargets {
+		target := &response.DeploymentTargets[i]
+		c.deploymentTargetCache[target.ID] = target
+	}
+
+	c.deploymentTargetsLoaded = true
+	return nil
+}
+
+func (c *PorterClient) GetCluster(ctx context.Context, clusterID int) (*PorterCluster, error) {
+	// Load all clusters if not already loaded
+	if !c.clustersLoaded {
+		if err := c.loadClusters(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	// Return from cache
+	if cluster, ok := c.clusterCache[clusterID]; ok {
+		return cluster, nil
+	}
+
+	return nil, fmt.Errorf("cluster %d not found", clusterID)
+}
+
+func (c *PorterClient) loadClusters(ctx context.Context) error {
+	url := fmt.Sprintf("%s/api/v2/projects/%s/clusters", c.BaseURL, c.ProjectID)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Print debug output if enabled
+	if c.Debug {
+		fmt.Fprintf(os.Stderr, "DEBUG - ListClusters Raw Response:\n%s\n\n", string(body))
+	}
+
+	var response PorterListClustersResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	// Cache all clusters
+	for i := range response.Clusters {
+		cluster := &response.Clusters[i]
+		c.clusterCache[cluster.ID] = cluster
+	}
+
+	c.clustersLoaded = true
+	return nil
 }
 
 func parseResourceValue(value string, isCPU bool) (int64, error) {
