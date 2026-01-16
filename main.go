@@ -120,6 +120,7 @@ func main() {
 	var debug bool
 	var showVersion bool
 	var allNamespaces bool
+	var labelSelector string
 
 	// Default kubeconfig path: KUBECONFIG env var, then ~/.kube/config
 	defaultKubeconfig := os.Getenv("KUBECONFIG")
@@ -141,6 +142,8 @@ func main() {
 	flag.BoolVar(&debug, "debug", false, "Enable debug output")
 	flag.BoolVar(&allNamespaces, "A", false, "List resources across all namespaces")
 	flag.BoolVar(&allNamespaces, "all-namespaces", false, "List resources across all namespaces")
+	flag.StringVar(&labelSelector, "l", "", "Label selector to filter deployments (e.g., 'app=myapp,env=prod')")
+	flag.StringVar(&labelSelector, "selector", "", "Label selector to filter deployments (alias for -l)")
 	flag.Parse()
 
 	// Handle version flag
@@ -161,6 +164,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Validate deployment name and label selector are mutually exclusive
+	if !usePorter && deploymentName != "" && labelSelector != "" {
+		fmt.Fprintf(os.Stderr, "Error: --deployment and -l/--selector flags are mutually exclusive\n")
+		os.Exit(1)
+	}
+
 	ctx := context.Background()
 	var deployments []DeploymentMetrics
 
@@ -173,6 +182,9 @@ func main() {
 		if porterProjectID == "" {
 			fmt.Fprintf(os.Stderr, "Error: Porter project ID required. Set PORTER_PROJECT_ID env var or use --porter-project-id flag\n")
 			os.Exit(1)
+		}
+		if labelSelector != "" {
+			fmt.Fprintf(os.Stderr, "Warning: -l/--selector flag is only supported in Kubernetes mode, ignoring\n")
 		}
 
 		client := &PorterClient{
@@ -268,7 +280,11 @@ func main() {
 			}
 		} else {
 			// Get all deployments in namespace
-			deploymentList, err := clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
+			listOptions := metav1.ListOptions{}
+			if labelSelector != "" {
+				listOptions.LabelSelector = labelSelector
+			}
+			deploymentList, err := clientset.AppsV1().Deployments(namespace).List(ctx, listOptions)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error listing deployments: %v\n", err)
 				os.Exit(1)
