@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Go CLI tool that retrieves resource requests and usage metrics for deployments. The tool supports two modes:
+This is a Go CLI tool that retrieves resource requests and usage metrics for deployments and jobs. The tool supports two modes:
 
 1. **Kubernetes Mode** (default): Directly interfaces with the Kubernetes API via kubeconfig
 2. **Porter Mode** (`--porter` flag): Interfaces with the Porter API to retrieve application metrics
 
-The tool supports three output modes: current usage, resource requests, and max requests (based on HPA/autoscaling configuration).
+The tool supports three output modes: current usage, resource requests, and max requests (based on HPA/autoscaling configuration). In Kubernetes mode, Jobs can be included in the calculation using the `--include-jobs` flag.
 
 ## Build and Development Commands
 
@@ -44,6 +44,15 @@ go install
 
 # Use custom kubeconfig
 ./k8s-resource-cli --kubeconfig /path/to/config
+
+# Include Jobs in the resource calculation
+./k8s-resource-cli --include-jobs
+
+# Show all deployments and jobs across all namespaces
+./k8s-resource-cli -A --include-jobs
+
+# Filter by label selector and include jobs
+./k8s-resource-cli -l app=myapp --include-jobs
 ```
 
 #### Porter Mode
@@ -77,6 +86,7 @@ The tool requires:
 - A running Kubernetes cluster accessible via kubeconfig
 - Metrics Server installed (for usage metrics)
 - Deployments with resource requests configured
+- Jobs with resource requests configured (when using --include-jobs)
 
 ### Testing with Porter
 The tool requires:
@@ -94,7 +104,8 @@ The entire application is in `main.go`. All logic is contained in one file with 
 #### Shared Structures
 **ResourceMetrics** - Represents CPU (millicores) and memory (bytes) metrics
 
-**DeploymentMetrics** - Aggregates all metrics for a deployment including:
+**DeploymentMetrics** - Aggregates all metrics for a deployment or job including:
+- Type field to distinguish between "Deployment" and "Job"
 - Current/desired/max replica counts
 - Usage, requests, and max requests calculations
 - Namespace (Kubernetes) or Target (Porter) name
@@ -122,6 +133,8 @@ The entire application is in `main.go`. All logic is contained in one file with 
 **printResults()** - Formats output using tabwriter with totals row
 - Shows "NAMESPACE" column in Kubernetes mode
 - Shows "TARGET" column in Porter mode
+- Adds a "TYPE" column when Jobs are included to distinguish between Deployments and Jobs
+- Changes header from "DEPLOYMENT" to "NAME" when TYPE column is present
 
 #### Kubernetes Mode Functions
 **getNamespaceFromKubeconfig()** - Extracts the current namespace from kubeconfig context
@@ -132,6 +145,14 @@ The entire application is in `main.go`. All logic is contained in one file with 
 3. Calculates resource requests by summing container requests across all pods
 4. Queries Metrics Server API for current usage
 5. Looks up associated HPA to get max replicas and calculates max requests
+
+**getJobMetrics()** - Similar to getDeploymentMetrics but for Jobs:
+1. Retrieves job spec for completions and parallelism information
+2. Uses active pods as current replicas
+3. Lists pods using job's label selector (tries job selector, falls back to `job-name=<name>`)
+4. Calculates resource requests by summing container requests across all pods
+5. Queries Metrics Server API for current usage
+6. For Jobs, max requests equals current requests (Jobs don't have HPA)
 
 #### Porter Mode Functions
 **getPorterApplicationMetrics()** - Retrieves metrics from Porter API:
@@ -231,3 +252,27 @@ Standard library (used in both modes):
 - `flag` - Command-line flags
 
 Uses Go 1.24+ and Kubernetes API version v0.29.0.
+
+### Jobs Support
+
+The tool can include Kubernetes Jobs in the resource calculation using the `--include-jobs` flag. This feature is only available in Kubernetes mode.
+
+#### Key Differences for Jobs:
+- **Replicas**: Jobs use `spec.completions` for desired replicas and `status.active` for current replicas
+- **Parallelism**: If completions is nil, the tool uses `spec.parallelism` as the desired replicas
+- **No HPA**: Jobs don't support HorizontalPodAutoscalers, so max requests always equal current requests
+- **Label Selector**: Jobs typically use `job-name=<name>` label selector or the job's spec selector
+
+#### Output with Jobs:
+When Jobs are included (using `--include-jobs`), the output format changes:
+- Header changes from "DEPLOYMENT" to "NAME"
+- A new "TYPE" column is added showing either "Deployment" or "Job"
+- Both deployments and jobs are included in the TOTAL row
+
+#### Example Output:
+```
+NAME               TYPE         NAMESPACE   REPLICAS   CPU           MEMORY
+my-app             Deployment   default     2/5        200m          512.00 MB
+batch-processor    Job          default     3/3        1.50 cores    2.00 GB
+TOTAL                                                  1.70 cores    2.49 GB
+```

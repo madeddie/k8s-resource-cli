@@ -35,6 +35,7 @@ type ResourceMetrics struct {
 type DeploymentMetrics struct {
 	Name            string
 	Namespace       string
+	Type            string // "Deployment" or "Job"
 	CurrentReplicas int32
 	DesiredReplicas int32
 	MaxReplicas     int32
@@ -121,6 +122,7 @@ func main() {
 	var showVersion bool
 	var allNamespaces bool
 	var labelSelector string
+	var includeJobs bool
 
 	// Default kubeconfig path: KUBECONFIG env var, then ~/.kube/config
 	defaultKubeconfig := os.Getenv("KUBECONFIG")
@@ -144,6 +146,7 @@ func main() {
 	flag.BoolVar(&allNamespaces, "all-namespaces", false, "List resources across all namespaces")
 	flag.StringVar(&labelSelector, "l", "", "Label selector to filter deployments (e.g., 'app=myapp,env=prod')")
 	flag.StringVar(&labelSelector, "selector", "", "Label selector to filter deployments (alias for -l)")
+	flag.BoolVar(&includeJobs, "include-jobs", false, "Include Jobs in the resource calculation")
 	flag.Parse()
 
 	// Handle version flag
@@ -185,6 +188,9 @@ func main() {
 		}
 		if labelSelector != "" {
 			fmt.Fprintf(os.Stderr, "Warning: -l/--selector flag is only supported in Kubernetes mode, ignoring\n")
+		}
+		if includeJobs {
+			fmt.Fprintf(os.Stderr, "Warning: --include-jobs flag is only supported in Kubernetes mode, ignoring\n")
 		}
 
 		client := &PorterClient{
@@ -298,6 +304,68 @@ func main() {
 				deployments = append(deployments, metrics)
 			}
 		}
+
+		// Get jobs if includeJobs flag is set
+		if includeJobs {
+			if deploymentName != "" {
+				if allNamespaces {
+					// When using -A, search all namespaces for the job
+					jobList, err := clientset.BatchV1().Jobs("").List(ctx, metav1.ListOptions{})
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Error listing jobs: %v\n", err)
+						os.Exit(1)
+					}
+					found := false
+					for _, job := range jobList.Items {
+						if job.Name == deploymentName {
+							found = true
+							metrics, err := getJobMetrics(ctx, clientset, metricsClientset, job.Namespace, job.Name)
+							if err != nil {
+								fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for job %s in namespace %s: %v\n",
+									deploymentName, job.Namespace, err)
+								continue
+							}
+							deployments = append(deployments, metrics)
+						}
+					}
+					if !found {
+						fmt.Fprintf(os.Stderr, "Warning: No job named %s found in any namespace\n", deploymentName)
+					}
+				} else {
+					// Get specific job in specific namespace
+					job, err := clientset.BatchV1().Jobs(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: Error getting job %s: %v\n", deploymentName, err)
+					} else {
+						metrics, err := getJobMetrics(ctx, clientset, metricsClientset, job.Namespace, job.Name)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for job %s: %v\n", deploymentName, err)
+						} else {
+							deployments = append(deployments, metrics)
+						}
+					}
+				}
+			} else {
+				// Get all jobs in namespace
+				listOptions := metav1.ListOptions{}
+				if labelSelector != "" {
+					listOptions.LabelSelector = labelSelector
+				}
+				jobList, err := clientset.BatchV1().Jobs(namespace).List(ctx, listOptions)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error listing jobs: %v\n", err)
+					os.Exit(1)
+				}
+				for _, job := range jobList.Items {
+					metrics, err := getJobMetrics(ctx, clientset, metricsClientset, job.Namespace, job.Name)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for job %s: %v\n", job.Name, err)
+						continue
+					}
+					deployments = append(deployments, metrics)
+				}
+			}
+		}
 	}
 
 	// Output results
@@ -336,6 +404,7 @@ func getDeploymentMetrics(ctx context.Context, clientset *kubernetes.Clientset, 
 	dm := DeploymentMetrics{
 		Name:            name,
 		Namespace:       namespace,
+		Type:            "Deployment",
 		CurrentReplicas: deployment.Status.Replicas,
 		DesiredReplicas: *deployment.Spec.Replicas,
 		MaxReplicas:     *deployment.Spec.Replicas, // Default to desired, will be overridden by HPA if exists
@@ -410,6 +479,91 @@ func getDeploymentMetrics(ctx context.Context, clientset *kubernetes.Clientset, 
 	return dm, nil
 }
 
+func getJobMetrics(ctx context.Context, clientset *kubernetes.Clientset, metricsClientset *versioned.Clientset, namespace, name string) (DeploymentMetrics, error) {
+	// Get the job first to get completions and parallelism information
+	job, err := clientset.BatchV1().Jobs(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return DeploymentMetrics{}, fmt.Errorf("error getting job: %w", err)
+	}
+
+	// For jobs, we use active pods as current replicas
+	// Completions is the desired number of successful completions
+	currentReplicas := job.Status.Active
+	var desiredReplicas int32
+	if job.Spec.Completions != nil {
+		desiredReplicas = *job.Spec.Completions
+	} else {
+		// If completions is nil, it means the job runs indefinitely or until manually stopped
+		// We'll use parallelism as the desired replicas
+		if job.Spec.Parallelism != nil {
+			desiredReplicas = *job.Spec.Parallelism
+		} else {
+			desiredReplicas = 1
+		}
+	}
+
+	dm := DeploymentMetrics{
+		Name:            name,
+		Namespace:       namespace,
+		Type:            "Job",
+		CurrentReplicas: currentReplicas,
+		DesiredReplicas: desiredReplicas,
+		MaxReplicas:     desiredReplicas, // Jobs don't scale, max equals desired
+	}
+
+	// Get label selector from job
+	// Jobs typically use job-name=<name> or controller-uid labels
+	var labelSelector string
+	if job.Spec.Selector != nil {
+		labelSelector = metav1.FormatLabelSelector(job.Spec.Selector)
+	} else {
+		labelSelector = fmt.Sprintf("job-name=%s", name)
+	}
+
+	// Get pods for this job
+	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		return dm, fmt.Errorf("error listing pods: %w", err)
+	}
+
+	// Calculate requests from pod specs
+	for _, pod := range pods.Items {
+		for _, container := range pod.Spec.Containers {
+			if cpu := container.Resources.Requests.Cpu(); cpu != nil {
+				dm.Requests.CPU += cpu.MilliValue()
+			}
+			if memory := container.Resources.Requests.Memory(); memory != nil {
+				dm.Requests.Memory += memory.Value()
+			}
+		}
+	}
+
+	// Get current usage from metrics API
+	podMetricsList, err := metricsClientset.MetricsV1beta1().PodMetricses(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err == nil {
+		for _, podMetrics := range podMetricsList.Items {
+			for _, container := range podMetrics.Containers {
+				if cpu := container.Usage.Cpu(); cpu != nil {
+					dm.Usage.CPU += cpu.MilliValue()
+				}
+				if memory := container.Usage.Memory(); memory != nil {
+					dm.Usage.Memory += memory.Value()
+				}
+			}
+		}
+	}
+
+	// For jobs, max requests equals current requests (no HPA)
+	dm.MaxRequests.CPU = dm.Requests.CPU
+	dm.MaxRequests.Memory = dm.Requests.Memory
+
+	return dm, nil
+}
+
 func printResults(deployments []DeploymentMetrics, outputType string, usePorter bool) {
 	if len(deployments) == 0 {
 		fmt.Println("No deployments found")
@@ -419,12 +573,25 @@ func printResults(deployments []DeploymentMetrics, outputType string, usePorter 
 	// Create a tabwriter for aligned output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 
+	// Check if there are any Jobs in the list to determine if we need TYPE column
+	hasJobs := false
+	for _, dm := range deployments {
+		if dm.Type == "Job" {
+			hasJobs = true
+			break
+		}
+	}
+
 	// Print header
 	namespaceHeader := "NAMESPACE"
 	if usePorter {
 		namespaceHeader = "TARGET"
 	}
-	fmt.Fprintf(w, "DEPLOYMENT\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
+	if hasJobs {
+		fmt.Fprintf(w, "NAME\tTYPE\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
+	} else {
+		fmt.Fprintf(w, "DEPLOYMENT\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
+	}
 
 	var totalCPU, totalMemory int64
 
@@ -467,11 +634,19 @@ func printResults(deployments []DeploymentMetrics, outputType string, usePorter 
 			}
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", dm.Name, dm.Namespace, replicas, cpu, memory)
+		if hasJobs {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", dm.Name, dm.Type, dm.Namespace, replicas, cpu, memory)
+		} else {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", dm.Name, dm.Namespace, replicas, cpu, memory)
+		}
 	}
 
 	// Print totals row
-	fmt.Fprintf(w, "TOTAL\t\t\t%s\t%s\n", formatCPU(totalCPU), formatMemory(totalMemory))
+	if hasJobs {
+		fmt.Fprintf(w, "TOTAL\t\t\t\t%s\t%s\n", formatCPU(totalCPU), formatMemory(totalMemory))
+	} else {
+		fmt.Fprintf(w, "TOTAL\t\t\t%s\t%s\n", formatCPU(totalCPU), formatMemory(totalMemory))
+	}
 
 	// Flush the writer to output everything
 	w.Flush()
@@ -550,6 +725,7 @@ func getPorterApplicationMetrics(ctx context.Context, client *PorterClient, appN
 			dm := DeploymentMetrics{
 				Name:            fmt.Sprintf("%s-%s", app.Name, service.Name),
 				Namespace:       clusterName,
+				Type:            "Deployment",
 				CurrentReplicas: service.Instances,
 				DesiredReplicas: minReplicas,
 				MaxReplicas:     maxReplicas,
