@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Go CLI tool that retrieves resource requests and usage metrics for deployments. The tool supports two modes:
+This is a Go CLI tool that retrieves resource requests and usage metrics for deployments and cronjobs. The tool supports two modes:
 
 1. **Kubernetes Mode** (default): Directly interfaces with the Kubernetes API via kubeconfig
 2. **Porter Mode** (`--porter` flag): Interfaces with the Porter API to retrieve application metrics
 
-The tool supports three output modes: current usage, resource requests, and max requests (based on HPA/autoscaling configuration).
+The tool supports three output modes: current usage, resource requests, and max requests (based on HPA/autoscaling configuration). In Kubernetes mode, CronJobs can be included in the calculation using the `--include-cronjobs` flag.
 
 ## Build and Development Commands
 
@@ -44,6 +44,21 @@ go install
 
 # Use custom kubeconfig
 ./k8s-resource-cli --kubeconfig /path/to/config
+
+# Include CronJobs in the resource calculation
+./k8s-resource-cli --include-cronjobs
+
+# Show all deployments and cronjobs across all namespaces
+./k8s-resource-cli -A --include-cronjobs
+
+# Filter by label selector and include cronjobs
+./k8s-resource-cli -l app=myapp --include-cronjobs
+
+# Show only the total line (hide individual deployments)
+./k8s-resource-cli --total-only
+
+# Show total across all namespaces
+./k8s-resource-cli -A --total-only
 ```
 
 #### Porter Mode
@@ -77,6 +92,7 @@ The tool requires:
 - A running Kubernetes cluster accessible via kubeconfig
 - Metrics Server installed (for usage metrics)
 - Deployments with resource requests configured
+- CronJobs with resource requests configured (when using --include-cronjobs)
 
 ### Testing with Porter
 The tool requires:
@@ -94,7 +110,8 @@ The entire application is in `main.go`. All logic is contained in one file with 
 #### Shared Structures
 **ResourceMetrics** - Represents CPU (millicores) and memory (bytes) metrics
 
-**DeploymentMetrics** - Aggregates all metrics for a deployment including:
+**DeploymentMetrics** - Aggregates all metrics for a deployment or cronjob including:
+- Type field to distinguish between "Deployment" and "CronJob"
 - Current/desired/max replica counts
 - Usage, requests, and max requests calculations
 - Namespace (Kubernetes) or Target (Porter) name
@@ -122,6 +139,8 @@ The entire application is in `main.go`. All logic is contained in one file with 
 **printResults()** - Formats output using tabwriter with totals row
 - Shows "NAMESPACE" column in Kubernetes mode
 - Shows "TARGET" column in Porter mode
+- Adds a "TYPE" column when CronJobs are included to distinguish between Deployments and CronJobs
+- Changes header from "DEPLOYMENT" to "NAME" when TYPE column is present
 
 #### Kubernetes Mode Functions
 **getNamespaceFromKubeconfig()** - Extracts the current namespace from kubeconfig context
@@ -132,6 +151,14 @@ The entire application is in `main.go`. All logic is contained in one file with 
 3. Calculates resource requests by summing container requests across all pods
 4. Queries Metrics Server API for current usage
 5. Looks up associated HPA to get max replicas and calculates max requests
+
+**getCronJobMetrics()** - Similar to getDeploymentMetrics but for CronJobs:
+1. Retrieves cronjob spec to get jobTemplate information
+2. Uses jobTemplate's completions and parallelism for desired replicas
+3. Counts active jobs created by the cronjob for current replicas
+4. Calculates resource requests from the jobTemplate spec
+5. Queries Metrics Server API for current usage from active job pods
+6. For CronJobs, max requests equals current requests (CronJobs don't have HPA)
 
 #### Porter Mode Functions
 **getPorterApplicationMetrics()** - Retrieves metrics from Porter API:
@@ -161,6 +188,18 @@ The tool has three output types controlled by the `--output` flag:
 1. **usage** - Shows current CPU/memory usage from Metrics Server
 2. **requests** - Shows resource requests from pod specs
 3. **max-requests** - Shows projected resources at HPA max replicas (or current requests if no HPA)
+
+### Total Only Mode
+
+The `--total-only` flag hides individual deployment/cronjob lines and shows only the TOTAL row. This is useful for:
+- Quick summaries of total cluster resources
+- Scripting and monitoring dashboards
+- Getting aggregate metrics without detailed breakdown
+
+Example output:
+```
+TOTAL     1.70 cores    2.49 GB
+```
 
 ### Label Selection Strategy
 
@@ -231,3 +270,27 @@ Standard library (used in both modes):
 - `flag` - Command-line flags
 
 Uses Go 1.24+ and Kubernetes API version v0.29.0.
+
+### CronJobs Support
+
+The tool can include Kubernetes CronJobs in the resource calculation using the `--include-cronjobs` flag. This feature is only available in Kubernetes mode.
+
+#### Key Differences for CronJobs:
+- **Replicas**: CronJobs use the jobTemplate's `spec.completions` or `spec.parallelism` for desired replicas per job
+- **Current Replicas**: Calculated by counting active jobs and their parallelism
+- **No HPA**: CronJobs don't support HorizontalPodAutoscalers, so max requests always equal current requests
+- **Resource Calculation**: Resources are calculated from the jobTemplate spec, representing what each job run would consume
+
+#### Output with CronJobs:
+When CronJobs are included (using `--include-cronjobs`), the output format changes:
+- Header changes from "DEPLOYMENT" to "NAME"
+- A new "TYPE" column is added showing either "Deployment" or "CronJob"
+- Both deployments and cronjobs are included in the TOTAL row
+
+#### Example Output:
+```
+NAME               TYPE         NAMESPACE   REPLICAS   CPU           MEMORY
+my-app             Deployment   default     2/5        200m          512.00 MB
+batch-processor    CronJob      default     3/3        1.50 cores    2.00 GB
+TOTAL                                                  1.70 cores    2.49 GB
+```

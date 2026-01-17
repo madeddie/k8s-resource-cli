@@ -35,6 +35,7 @@ type ResourceMetrics struct {
 type DeploymentMetrics struct {
 	Name            string
 	Namespace       string
+	Type            string // "Deployment" or "CronJob"
 	CurrentReplicas int32
 	DesiredReplicas int32
 	MaxReplicas     int32
@@ -121,6 +122,8 @@ func main() {
 	var showVersion bool
 	var allNamespaces bool
 	var labelSelector string
+	var includeCronJobs bool
+	var totalOnly bool
 
 	// Default kubeconfig path: KUBECONFIG env var, then ~/.kube/config
 	defaultKubeconfig := os.Getenv("KUBECONFIG")
@@ -144,6 +147,8 @@ func main() {
 	flag.BoolVar(&allNamespaces, "all-namespaces", false, "List resources across all namespaces")
 	flag.StringVar(&labelSelector, "l", "", "Label selector to filter deployments (e.g., 'app=myapp,env=prod')")
 	flag.StringVar(&labelSelector, "selector", "", "Label selector to filter deployments (alias for -l)")
+	flag.BoolVar(&includeCronJobs, "include-cronjobs", false, "Include CronJobs in the resource calculation")
+	flag.BoolVar(&totalOnly, "total-only", false, "Show only the total line, hide individual resources")
 	flag.Parse()
 
 	// Handle version flag
@@ -185,6 +190,9 @@ func main() {
 		}
 		if labelSelector != "" {
 			fmt.Fprintf(os.Stderr, "Warning: -l/--selector flag is only supported in Kubernetes mode, ignoring\n")
+		}
+		if includeCronJobs {
+			fmt.Fprintf(os.Stderr, "Warning: --include-cronjobs flag is only supported in Kubernetes mode, ignoring\n")
 		}
 
 		client := &PorterClient{
@@ -298,10 +306,72 @@ func main() {
 				deployments = append(deployments, metrics)
 			}
 		}
+
+		// Get cronjobs if includeCronJobs flag is set
+		if includeCronJobs {
+			if deploymentName != "" {
+				if allNamespaces {
+					// When using -A, search all namespaces for the cronjob
+					cronJobList, err := clientset.BatchV1().CronJobs("").List(ctx, metav1.ListOptions{})
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Error listing cronjobs: %v\n", err)
+						os.Exit(1)
+					}
+					found := false
+					for _, cronJob := range cronJobList.Items {
+						if cronJob.Name == deploymentName {
+							found = true
+							metrics, err := getCronJobMetrics(ctx, clientset, metricsClientset, cronJob.Namespace, cronJob.Name)
+							if err != nil {
+								fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for cronjob %s in namespace %s: %v\n",
+									deploymentName, cronJob.Namespace, err)
+								continue
+							}
+							deployments = append(deployments, metrics)
+						}
+					}
+					if !found {
+						fmt.Fprintf(os.Stderr, "Warning: No cronjob named %s found in any namespace\n", deploymentName)
+					}
+				} else {
+					// Get specific cronjob in specific namespace
+					cronJob, err := clientset.BatchV1().CronJobs(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: Error getting cronjob %s: %v\n", deploymentName, err)
+					} else {
+						metrics, err := getCronJobMetrics(ctx, clientset, metricsClientset, cronJob.Namespace, cronJob.Name)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for cronjob %s: %v\n", deploymentName, err)
+						} else {
+							deployments = append(deployments, metrics)
+						}
+					}
+				}
+			} else {
+				// Get all cronjobs in namespace
+				listOptions := metav1.ListOptions{}
+				if labelSelector != "" {
+					listOptions.LabelSelector = labelSelector
+				}
+				cronJobList, err := clientset.BatchV1().CronJobs(namespace).List(ctx, listOptions)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error listing cronjobs: %v\n", err)
+					os.Exit(1)
+				}
+				for _, cronJob := range cronJobList.Items {
+					metrics, err := getCronJobMetrics(ctx, clientset, metricsClientset, cronJob.Namespace, cronJob.Name)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for cronjob %s: %v\n", cronJob.Name, err)
+						continue
+					}
+					deployments = append(deployments, metrics)
+				}
+			}
+		}
 	}
 
 	// Output results
-	printResults(deployments, outputType, usePorter)
+	printResults(deployments, outputType, usePorter, totalOnly)
 }
 
 func getNamespaceFromKubeconfig(kubeconfigPath string) (string, error) {
@@ -336,6 +406,7 @@ func getDeploymentMetrics(ctx context.Context, clientset *kubernetes.Clientset, 
 	dm := DeploymentMetrics{
 		Name:            name,
 		Namespace:       namespace,
+		Type:            "Deployment",
 		CurrentReplicas: deployment.Status.Replicas,
 		DesiredReplicas: *deployment.Spec.Replicas,
 		MaxReplicas:     *deployment.Spec.Replicas, // Default to desired, will be overridden by HPA if exists
@@ -410,7 +481,83 @@ func getDeploymentMetrics(ctx context.Context, clientset *kubernetes.Clientset, 
 	return dm, nil
 }
 
-func printResults(deployments []DeploymentMetrics, outputType string, usePorter bool) {
+func getCronJobMetrics(ctx context.Context, clientset *kubernetes.Clientset, metricsClientset *versioned.Clientset, namespace, name string) (DeploymentMetrics, error) {
+	// Get the cronjob first to get job template information
+	cronJob, err := clientset.BatchV1().CronJobs(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return DeploymentMetrics{}, fmt.Errorf("error getting cronjob: %w", err)
+	}
+
+	// For cronjobs, we look at the jobTemplate spec to understand resource requirements
+	// We use parallelism and completions from the job template
+	var desiredReplicas int32 = 1
+	if cronJob.Spec.JobTemplate.Spec.Completions != nil {
+		desiredReplicas = *cronJob.Spec.JobTemplate.Spec.Completions
+	} else if cronJob.Spec.JobTemplate.Spec.Parallelism != nil {
+		desiredReplicas = *cronJob.Spec.JobTemplate.Spec.Parallelism
+	}
+
+	// Count active jobs created by this cronjob
+	var currentReplicas int32
+	if cronJob.Status.Active != nil {
+		for range cronJob.Status.Active {
+			currentReplicas += desiredReplicas // Each active job contributes its parallelism
+		}
+	}
+
+	dm := DeploymentMetrics{
+		Name:            name,
+		Namespace:       namespace,
+		Type:            "CronJob",
+		CurrentReplicas: currentReplicas,
+		DesiredReplicas: desiredReplicas,
+		MaxReplicas:     desiredReplicas, // CronJobs don't scale, max equals desired
+	}
+
+	// Calculate resource requests from the job template spec
+	for _, container := range cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers {
+		if cpu := container.Resources.Requests.Cpu(); cpu != nil {
+			dm.Requests.CPU += cpu.MilliValue() * int64(desiredReplicas)
+		}
+		if memory := container.Resources.Requests.Memory(); memory != nil {
+			dm.Requests.Memory += memory.Value() * int64(desiredReplicas)
+		}
+	}
+
+	// Get pods from active jobs created by this cronjob for usage metrics
+	if len(cronJob.Status.Active) > 0 {
+		// List all pods owned by jobs created by this cronjob
+		for _, activeJob := range cronJob.Status.Active {
+			pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+				LabelSelector: fmt.Sprintf("job-name=%s", activeJob.Name),
+			})
+			if err == nil {
+				// Get current usage from metrics API for these pods
+				for _, pod := range pods.Items {
+					podMetrics, err := metricsClientset.MetricsV1beta1().PodMetricses(namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+					if err == nil {
+						for _, container := range podMetrics.Containers {
+							if cpu := container.Usage.Cpu(); cpu != nil {
+								dm.Usage.CPU += cpu.MilliValue()
+							}
+							if memory := container.Usage.Memory(); memory != nil {
+								dm.Usage.Memory += memory.Value()
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// For cronjobs, max requests equals current requests (no HPA)
+	dm.MaxRequests.CPU = dm.Requests.CPU
+	dm.MaxRequests.Memory = dm.Requests.Memory
+
+	return dm, nil
+}
+
+func printResults(deployments []DeploymentMetrics, outputType string, usePorter bool, totalOnly bool) {
 	if len(deployments) == 0 {
 		fmt.Println("No deployments found")
 		return
@@ -419,12 +566,27 @@ func printResults(deployments []DeploymentMetrics, outputType string, usePorter 
 	// Create a tabwriter for aligned output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 
-	// Print header
-	namespaceHeader := "NAMESPACE"
-	if usePorter {
-		namespaceHeader = "TARGET"
+	// Check if there are any CronJobs in the list to determine if we need TYPE column
+	hasCronJobs := false
+	for _, dm := range deployments {
+		if dm.Type == "CronJob" {
+			hasCronJobs = true
+			break
+		}
 	}
-	fmt.Fprintf(w, "DEPLOYMENT\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
+
+	// Print header (unless totalOnly is set)
+	if !totalOnly {
+		namespaceHeader := "NAMESPACE"
+		if usePorter {
+			namespaceHeader = "TARGET"
+		}
+		if hasCronJobs {
+			fmt.Fprintf(w, "NAME\tTYPE\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
+		} else {
+			fmt.Fprintf(w, "DEPLOYMENT\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
+		}
+	}
 
 	var totalCPU, totalMemory int64
 
@@ -467,11 +629,22 @@ func printResults(deployments []DeploymentMetrics, outputType string, usePorter 
 			}
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", dm.Name, dm.Namespace, replicas, cpu, memory)
+		// Only print individual lines if totalOnly is not set
+		if !totalOnly {
+			if hasCronJobs {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", dm.Name, dm.Type, dm.Namespace, replicas, cpu, memory)
+			} else {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", dm.Name, dm.Namespace, replicas, cpu, memory)
+			}
+		}
 	}
 
 	// Print totals row
-	fmt.Fprintf(w, "TOTAL\t\t\t%s\t%s\n", formatCPU(totalCPU), formatMemory(totalMemory))
+	if hasCronJobs {
+		fmt.Fprintf(w, "TOTAL\t\t\t\t%s\t%s\n", formatCPU(totalCPU), formatMemory(totalMemory))
+	} else {
+		fmt.Fprintf(w, "TOTAL\t\t\t%s\t%s\n", formatCPU(totalCPU), formatMemory(totalMemory))
+	}
 
 	// Flush the writer to output everything
 	w.Flush()
@@ -550,6 +723,7 @@ func getPorterApplicationMetrics(ctx context.Context, client *PorterClient, appN
 			dm := DeploymentMetrics{
 				Name:            fmt.Sprintf("%s-%s", app.Name, service.Name),
 				Namespace:       clusterName,
+				Type:            "Deployment",
 				CurrentReplicas: service.Instances,
 				DesiredReplicas: minReplicas,
 				MaxReplicas:     maxReplicas,
