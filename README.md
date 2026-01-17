@@ -14,7 +14,7 @@ A vibe-coded CLI tool written in Go that interfaces with the Kubernetes API to r
 
 ## Prerequisites
 
-- Go 1.24+ (for building from source)
+- Go 1.25+ (for building from source)
 - Access to a Kubernetes cluster
 - Valid kubeconfig file (typically at `~/.kube/config`)
 - Metrics Server running in your cluster (for usage metrics)
