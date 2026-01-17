@@ -525,7 +525,6 @@ func getCronJobMetrics(ctx context.Context, clientset *kubernetes.Clientset, met
 	// Get pods from active jobs created by this cronjob for usage metrics
 	if len(cronJob.Status.Active) > 0 {
 		// List all pods owned by jobs created by this cronjob
-		labelSelector := fmt.Sprintf("job-name")
 		for _, activeJob := range cronJob.Status.Active {
 			pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 				LabelSelector: fmt.Sprintf("job-name=%s", activeJob.Name),
