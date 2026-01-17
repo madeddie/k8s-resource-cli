@@ -18,7 +18,7 @@ vendor/
 go.work
 
 # Built binary
-k8s-resource-cli
+/k8s-resource-cli
 
 # IDE specific files
 .idea/

@@ -15,12 +15,12 @@ The tool supports three output modes: current usage, resource requests, and max 
 
 ### Building the Project
 ```bash
-go build -o k8s-resource-cli
+go build -o k8s-resource-cli ./cmd/k8s-resource-cli
 ```
 
 ### Installing
 ```bash
-go install
+go install ./cmd/k8s-resource-cli
 ```
 
 ### Running the Tool
@@ -102,8 +102,35 @@ The tool requires:
 
 ## Architecture
 
-### Single-File Structure
-The entire application is in `main.go`. All logic is contained in one file with no package separation.
+### Project Structure
+The application follows the Go project layout convention with the main package split into multiple focused files:
+
+```
+k8s-resource-cli/
+├── cmd/
+│   └── k8s-resource-cli/
+│       ├── main.go          # Entry point (~5 lines)
+│       ├── cli.go           # CLI orchestration (~280 lines)
+│       ├── types.go         # Data structures (~80 lines)
+│       ├── kubernetes.go    # K8s integration (~220 lines)
+│       ├── porter.go        # Porter API (~350 lines)
+│       └── output.go        # Formatting (~180 lines)
+├── go.mod
+├── go.sum
+├── README.md
+├── CLAUDE.md
+└── LICENSE
+```
+
+All files are in the `main` package, so functions and types are shared directly without imports. This provides modularity while maintaining a simple single-package structure.
+
+**File responsibilities:**
+- `main.go` - Minimal entry point that calls `runCLI()`
+- `cli.go` - Flag parsing, client initialization, and orchestration logic
+- `types.go` - All data structures (ResourceMetrics, DeploymentMetrics, Porter types)
+- `kubernetes.go` - Kubernetes API interactions (deployments, cronjobs, metrics)
+- `porter.go` - Porter API client and methods
+- `output.go` - Output formatting and resource parsing utilities
 
 ### Core Data Structures
 
@@ -134,25 +161,27 @@ The entire application is in `main.go`. All logic is contained in one file with 
 ### Key Functions
 
 #### Shared Functions
-**main()** - Entry point; handles CLI flags, creates clients (Kubernetes or Porter), and orchestrates the flow
+**main()** (`main.go`) - Minimal entry point that calls `runCLI()`
 
-**printResults()** - Formats output using tabwriter with totals row
+**runCLI()** (`cli.go`) - Main orchestration function; handles CLI flags, creates clients (Kubernetes or Porter), and orchestrates the flow
+
+**printResults()** (`output.go`) - Formats output using tabwriter with totals row
 - Shows "NAMESPACE" column in Kubernetes mode
 - Shows "TARGET" column in Porter mode
 - Adds a "TYPE" column when CronJobs are included to distinguish between Deployments and CronJobs
 - Changes header from "DEPLOYMENT" to "NAME" when TYPE column is present
 
 #### Kubernetes Mode Functions
-**getNamespaceFromKubeconfig()** - Extracts the current namespace from kubeconfig context
+**getNamespaceFromKubeconfig()** (`kubernetes.go`) - Extracts the current namespace from kubeconfig context
 
-**getDeploymentMetrics()** - Core function that:
+**getDeploymentMetrics()** (`kubernetes.go`) - Core function that:
 1. Retrieves deployment spec for replica information
 2. Lists pods using label selectors (tries deployment selector, falls back to `app=<name>`)
 3. Calculates resource requests by summing container requests across all pods
 4. Queries Metrics Server API for current usage
 5. Looks up associated HPA to get max replicas and calculates max requests
 
-**getCronJobMetrics()** - Similar to getDeploymentMetrics but for CronJobs:
+**getCronJobMetrics()** (`kubernetes.go`) - Similar to getDeploymentMetrics but for CronJobs:
 1. Retrieves cronjob spec to get jobTemplate information
 2. Uses jobTemplate's completions and parallelism for desired replicas
 3. Counts active jobs created by the cronjob for current replicas
@@ -161,7 +190,7 @@ The entire application is in `main.go`. All logic is contained in one file with 
 6. For CronJobs, max requests equals current requests (CronJobs don't have HPA)
 
 #### Porter Mode Functions
-**getPorterApplicationMetrics()** - Retrieves metrics from Porter API:
+**getPorterApplicationMetrics()** (`porter.go`) - Retrieves metrics from Porter API:
 1. Lists all applications (with limit=100)
 2. Shows progress spinner while loading each application
 3. Fetches detailed application info for each app
@@ -169,17 +198,17 @@ The entire application is in `main.go`. All logic is contained in one file with 
 5. Processes each service in the application
 6. Calculates resources based on service CPU/memory and replica counts
 
-**PorterClient.ListApplications()** - Lists applications from Porter API
+**PorterClient.ListApplications()** (`porter.go`) - Lists applications from Porter API
 
-**PorterClient.GetApplication()** - Fetches detailed application info by ID
+**PorterClient.GetApplication()** (`porter.go`) - Fetches detailed application info by ID
 
-**PorterClient.GetDeploymentTarget()** - Gets deployment target info (with caching)
+**PorterClient.GetDeploymentTarget()** (`porter.go`) - Gets deployment target info (with caching)
 
-**PorterClient.loadDeploymentTargets()** - Loads all deployment targets once and caches them
+**PorterClient.loadDeploymentTargets()** (`porter.go`) - Loads all deployment targets once and caches them
 
-**PorterClient.GetCluster()** - Gets cluster info by ID (with caching)
+**PorterClient.GetCluster()** (`porter.go`) - Gets cluster info by ID (with caching)
 
-**PorterClient.loadClusters()** - Loads all clusters once and caches them
+**PorterClient.loadClusters()** (`porter.go`) - Loads all clusters once and caches them
 
 ### Output Modes
 
