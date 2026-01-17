@@ -53,6 +53,12 @@ go install
 
 # Filter by label selector and include cronjobs
 ./k8s-resource-cli -l app=myapp --include-cronjobs
+
+# Show only the total line (hide individual deployments)
+./k8s-resource-cli --total-only
+
+# Show total across all namespaces
+./k8s-resource-cli -A --total-only
 ```
 
 #### Porter Mode
@@ -182,6 +188,18 @@ The tool has three output types controlled by the `--output` flag:
 1. **usage** - Shows current CPU/memory usage from Metrics Server
 2. **requests** - Shows resource requests from pod specs
 3. **max-requests** - Shows projected resources at HPA max replicas (or current requests if no HPA)
+
+### Total Only Mode
+
+The `--total-only` flag hides individual deployment/cronjob lines and shows only the TOTAL row. This is useful for:
+- Quick summaries of total cluster resources
+- Scripting and monitoring dashboards
+- Getting aggregate metrics without detailed breakdown
+
+Example output:
+```
+TOTAL     1.70 cores    2.49 GB
+```
 
 ### Label Selection Strategy
 

@@ -123,6 +123,7 @@ func main() {
 	var allNamespaces bool
 	var labelSelector string
 	var includeCronJobs bool
+	var totalOnly bool
 
 	// Default kubeconfig path: KUBECONFIG env var, then ~/.kube/config
 	defaultKubeconfig := os.Getenv("KUBECONFIG")
@@ -147,6 +148,7 @@ func main() {
 	flag.StringVar(&labelSelector, "l", "", "Label selector to filter deployments (e.g., 'app=myapp,env=prod')")
 	flag.StringVar(&labelSelector, "selector", "", "Label selector to filter deployments (alias for -l)")
 	flag.BoolVar(&includeCronJobs, "include-cronjobs", false, "Include CronJobs in the resource calculation")
+	flag.BoolVar(&totalOnly, "total-only", false, "Show only the total line, hide individual resources")
 	flag.Parse()
 
 	// Handle version flag
@@ -369,7 +371,7 @@ func main() {
 	}
 
 	// Output results
-	printResults(deployments, outputType, usePorter)
+	printResults(deployments, outputType, usePorter, totalOnly)
 }
 
 func getNamespaceFromKubeconfig(kubeconfigPath string) (string, error) {
@@ -555,7 +557,7 @@ func getCronJobMetrics(ctx context.Context, clientset *kubernetes.Clientset, met
 	return dm, nil
 }
 
-func printResults(deployments []DeploymentMetrics, outputType string, usePorter bool) {
+func printResults(deployments []DeploymentMetrics, outputType string, usePorter bool, totalOnly bool) {
 	if len(deployments) == 0 {
 		fmt.Println("No deployments found")
 		return
@@ -573,15 +575,17 @@ func printResults(deployments []DeploymentMetrics, outputType string, usePorter 
 		}
 	}
 
-	// Print header
-	namespaceHeader := "NAMESPACE"
-	if usePorter {
-		namespaceHeader = "TARGET"
-	}
-	if hasCronJobs {
-		fmt.Fprintf(w, "NAME\tTYPE\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
-	} else {
-		fmt.Fprintf(w, "DEPLOYMENT\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
+	// Print header (unless totalOnly is set)
+	if !totalOnly {
+		namespaceHeader := "NAMESPACE"
+		if usePorter {
+			namespaceHeader = "TARGET"
+		}
+		if hasCronJobs {
+			fmt.Fprintf(w, "NAME\tTYPE\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
+		} else {
+			fmt.Fprintf(w, "DEPLOYMENT\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
+		}
 	}
 
 	var totalCPU, totalMemory int64
@@ -625,10 +629,13 @@ func printResults(deployments []DeploymentMetrics, outputType string, usePorter 
 			}
 		}
 
-		if hasCronJobs {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", dm.Name, dm.Type, dm.Namespace, replicas, cpu, memory)
-		} else {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", dm.Name, dm.Namespace, replicas, cpu, memory)
+		// Only print individual lines if totalOnly is not set
+		if !totalOnly {
+			if hasCronJobs {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", dm.Name, dm.Type, dm.Namespace, replicas, cpu, memory)
+			} else {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", dm.Name, dm.Namespace, replicas, cpu, memory)
+			}
 		}
 	}
 
