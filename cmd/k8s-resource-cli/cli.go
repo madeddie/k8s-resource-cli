@@ -71,23 +71,12 @@ func runCLI() {
 		os.Exit(1)
 	}
 
-	// Validate mutually exclusive flags (Kubernetes mode only)
-	if !usePorter && namespace != "" && allNamespaces {
-		fmt.Fprintf(os.Stderr, "Error: --namespace and -A/--all-namespaces flags are mutually exclusive\n")
-		os.Exit(1)
-	}
-
-	// Validate deployment name and label selector are mutually exclusive
-	if !usePorter && deploymentName != "" && labelSelector != "" {
-		fmt.Fprintf(os.Stderr, "Error: --deployment and -l/--selector flags are mutually exclusive\n")
-		os.Exit(1)
-	}
+	validateFlags(usePorter, namespace, allNamespaces, deploymentName, labelSelector)
 
 	ctx := context.Background()
 	var deployments []DeploymentMetrics
 
 	if usePorter {
-		// Use Porter API
 		if porterToken == "" {
 			fmt.Fprintf(os.Stderr, "Error: Porter token required. Set PORTER_TOKEN env var or use --porter-token flag\n")
 			os.Exit(1)
@@ -120,164 +109,184 @@ func runCLI() {
 			os.Exit(1)
 		}
 	} else {
-		// Use direct Kubernetes API
-		// Build config from kubeconfig
-		config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error building kubeconfig: %v\n", err)
-			os.Exit(1)
-		}
+		clientset, metricsClientset := setupKubernetesClients(kubeconfig)
 
-		// Create kubernetes clientset
-		clientset, err := kubernetes.NewForConfig(config)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating Kubernetes client: %v\n", err)
-			os.Exit(1)
-		}
-
-		// Create metrics clientset (for usage metrics)
-		metricsClientset, err := versioned.NewForConfig(config)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating metrics client: %v\n", err)
-			os.Exit(1)
-		}
-
-		// Handle all-namespaces flag or get namespace from kubeconfig
 		if allNamespaces {
-			// Empty string means all namespaces in Kubernetes API
 			namespace = ""
 		} else if namespace == "" {
-			// Get namespace from kubeconfig if not specified
+			var err error
 			namespace, err = getNamespaceFromKubeconfig(kubeconfig)
 			if err != nil {
 				namespace = "default"
 			}
 		}
 
-		// Get deployments
-		if deploymentName != "" {
-			if allNamespaces {
-				// When using -A, search all namespaces for the deployment
-				deploymentList, err := clientset.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error listing deployments: %v\n", err)
-					os.Exit(1)
-				}
-				found := false
-				for _, deployment := range deploymentList.Items {
-					if deployment.Name == deploymentName {
-						found = true
-						metrics, err := getDeploymentMetrics(ctx, clientset, metricsClientset, deployment.Namespace, deployment.Name)
-						if err != nil {
-							fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for deployment %s in namespace %s: %v\n",
-								deploymentName, deployment.Namespace, err)
-							continue
-						}
-						deployments = append(deployments, metrics)
-					}
-				}
-				if !found {
-					fmt.Fprintf(os.Stderr, "Error: No deployment named %s found in any namespace\n", deploymentName)
-					os.Exit(1)
-				}
-			} else {
-				// Get specific deployment in specific namespace
-				deployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error getting deployment %s: %v\n", deploymentName, err)
-					os.Exit(1)
-				}
-				metrics, err := getDeploymentMetrics(ctx, clientset, metricsClientset, deployment.Namespace, deployment.Name)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error getting metrics for deployment %s: %v\n", deploymentName, err)
-					os.Exit(1)
-				}
-				deployments = append(deployments, metrics)
-			}
-		} else {
-			// Get all deployments in namespace
-			listOptions := metav1.ListOptions{}
-			if labelSelector != "" {
-				listOptions.LabelSelector = labelSelector
-			}
-			deploymentList, err := clientset.AppsV1().Deployments(namespace).List(ctx, listOptions)
+		deployments = getAllDeployments(ctx, clientset, metricsClientset, namespace, deploymentName, labelSelector, allNamespaces)
+
+		if includeCronJobs {
+			cronJobDeployments := getAllCronJobs(ctx, clientset, metricsClientset, namespace, deploymentName, labelSelector, allNamespaces)
+			deployments = append(deployments, cronJobDeployments...)
+		}
+	}
+
+	printResults(deployments, outputType, usePorter, totalOnly)
+}
+
+func validateFlags(usePorter bool, namespace string, allNamespaces bool, deploymentName string, labelSelector string) {
+	if namespace != "" && allNamespaces {
+		fmt.Fprintf(os.Stderr, "Error: --namespace and -A/--all-namespaces flags are mutually exclusive\n")
+		os.Exit(1)
+	}
+
+	if deploymentName != "" && labelSelector != "" {
+		fmt.Fprintf(os.Stderr, "Error: --deployment and -l/--selector flags are mutually exclusive\n")
+		os.Exit(1)
+	}
+}
+
+func setupKubernetesClients(kubeconfig string) (*kubernetes.Clientset, *versioned.Clientset) {
+	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error building kubeconfig: %v\n", err)
+		os.Exit(1)
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating Kubernetes client: %v\n", err)
+		os.Exit(1)
+	}
+
+	metricsClientset, err := versioned.NewForConfig(config)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating metrics client: %v\n", err)
+		os.Exit(1)
+	}
+
+	return clientset, metricsClientset
+}
+
+func getAllDeployments(ctx context.Context, clientset *kubernetes.Clientset, metricsClientset *versioned.Clientset, namespace, deploymentName, labelSelector string, allNamespaces bool) []DeploymentMetrics {
+	var deployments []DeploymentMetrics
+
+	if deploymentName != "" {
+		if allNamespaces {
+			deploymentList, err := clientset.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error listing deployments: %v\n", err)
 				os.Exit(1)
 			}
+			found := false
 			for _, deployment := range deploymentList.Items {
-				metrics, err := getDeploymentMetrics(ctx, clientset, metricsClientset, deployment.Namespace, deployment.Name)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for deployment %s: %v\n", deployment.Name, err)
-					continue
-				}
-				deployments = append(deployments, metrics)
-			}
-		}
-
-		// Get cronjobs if includeCronJobs flag is set
-		if includeCronJobs {
-			if deploymentName != "" {
-				if allNamespaces {
-					// When using -A, search all namespaces for the cronjob
-					cronJobList, err := clientset.BatchV1().CronJobs("").List(ctx, metav1.ListOptions{})
+				if deployment.Name == deploymentName {
+					found = true
+					metrics, err := getDeploymentMetrics(ctx, clientset, metricsClientset, deployment.Namespace, deployment.Name)
 					if err != nil {
-						fmt.Fprintf(os.Stderr, "Error listing cronjobs: %v\n", err)
-						os.Exit(1)
-					}
-					found := false
-					for _, cronJob := range cronJobList.Items {
-						if cronJob.Name == deploymentName {
-							found = true
-							metrics, err := getCronJobMetrics(ctx, clientset, metricsClientset, cronJob.Namespace, cronJob.Name)
-							if err != nil {
-								fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for cronjob %s in namespace %s: %v\n",
-									deploymentName, cronJob.Namespace, err)
-								continue
-							}
-							deployments = append(deployments, metrics)
-						}
-					}
-					if !found {
-						fmt.Fprintf(os.Stderr, "Warning: No cronjob named %s found in any namespace\n", deploymentName)
-					}
-				} else {
-					// Get specific cronjob in specific namespace
-					cronJob, err := clientset.BatchV1().CronJobs(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: Error getting cronjob %s: %v\n", deploymentName, err)
-					} else {
-						metrics, err := getCronJobMetrics(ctx, clientset, metricsClientset, cronJob.Namespace, cronJob.Name)
-						if err != nil {
-							fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for cronjob %s: %v\n", deploymentName, err)
-						} else {
-							deployments = append(deployments, metrics)
-						}
-					}
-				}
-			} else {
-				// Get all cronjobs in namespace
-				listOptions := metav1.ListOptions{}
-				if labelSelector != "" {
-					listOptions.LabelSelector = labelSelector
-				}
-				cronJobList, err := clientset.BatchV1().CronJobs(namespace).List(ctx, listOptions)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error listing cronjobs: %v\n", err)
-					os.Exit(1)
-				}
-				for _, cronJob := range cronJobList.Items {
-					metrics, err := getCronJobMetrics(ctx, clientset, metricsClientset, cronJob.Namespace, cronJob.Name)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for cronjob %s: %v\n", cronJob.Name, err)
+						fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for deployment %s in namespace %s: %v\n",
+							deploymentName, deployment.Namespace, err)
 						continue
 					}
 					deployments = append(deployments, metrics)
 				}
 			}
+			if !found {
+				fmt.Fprintf(os.Stderr, "Error: No deployment named %s found in any namespace\n", deploymentName)
+				os.Exit(1)
+			}
+		} else {
+			deployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting deployment %s: %v\n", deploymentName, err)
+				os.Exit(1)
+			}
+			metrics, err := getDeploymentMetrics(ctx, clientset, metricsClientset, deployment.Namespace, deployment.Name)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error getting metrics for deployment %s: %v\n", deploymentName, err)
+				os.Exit(1)
+			}
+			deployments = append(deployments, metrics)
+		}
+	} else {
+		listOptions := metav1.ListOptions{}
+		if labelSelector != "" {
+			listOptions.LabelSelector = labelSelector
+		}
+		deploymentList, err := clientset.AppsV1().Deployments(namespace).List(ctx, listOptions)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error listing deployments: %v\n", err)
+			os.Exit(1)
+		}
+		for _, deployment := range deploymentList.Items {
+			metrics, err := getDeploymentMetrics(ctx, clientset, metricsClientset, deployment.Namespace, deployment.Name)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for deployment %s: %v\n", deployment.Name, err)
+				continue
+			}
+			deployments = append(deployments, metrics)
 		}
 	}
 
-	// Output results
-	printResults(deployments, outputType, usePorter, totalOnly)
+	return deployments
+}
+
+func getAllCronJobs(ctx context.Context, clientset *kubernetes.Clientset, metricsClientset *versioned.Clientset, namespace, deploymentName, labelSelector string, allNamespaces bool) []DeploymentMetrics {
+	var deployments []DeploymentMetrics
+
+	if deploymentName != "" {
+		if allNamespaces {
+			cronJobList, err := clientset.BatchV1().CronJobs("").List(ctx, metav1.ListOptions{})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error listing cronjobs: %v\n", err)
+				os.Exit(1)
+			}
+			found := false
+			for _, cronJob := range cronJobList.Items {
+				if cronJob.Name == deploymentName {
+					found = true
+					metrics, err := getCronJobMetrics(ctx, clientset, metricsClientset, cronJob.Namespace, cronJob.Name)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for cronjob %s in namespace %s: %v\n",
+							deploymentName, cronJob.Namespace, err)
+						continue
+					}
+					deployments = append(deployments, metrics)
+				}
+			}
+			if !found {
+				fmt.Fprintf(os.Stderr, "Warning: No cronjob named %s found in any namespace\n", deploymentName)
+			}
+		} else {
+			cronJob, err := clientset.BatchV1().CronJobs(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: Error getting cronjob %s: %v\n", deploymentName, err)
+			} else {
+				metrics, err := getCronJobMetrics(ctx, clientset, metricsClientset, cronJob.Namespace, cronJob.Name)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for cronjob %s: %v\n", deploymentName, err)
+				} else {
+					deployments = append(deployments, metrics)
+				}
+			}
+		}
+	} else {
+		listOptions := metav1.ListOptions{}
+		if labelSelector != "" {
+			listOptions.LabelSelector = labelSelector
+		}
+		cronJobList, err := clientset.BatchV1().CronJobs(namespace).List(ctx, listOptions)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error listing cronjobs: %v\n", err)
+			os.Exit(1)
+		}
+		for _, cronJob := range cronJobList.Items {
+			metrics, err := getCronJobMetrics(ctx, clientset, metricsClientset, cronJob.Namespace, cronJob.Name)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for cronjob %s: %v\n", cronJob.Name, err)
+				continue
+			}
+			deployments = append(deployments, metrics)
+		}
+	}
+
+	return deployments
 }
