@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -44,8 +45,14 @@ func getDeploymentMetrics(ctx context.Context, clientset *kubernetes.Clientset, 
 		Namespace:       namespace,
 		Type:            "Deployment",
 		CurrentReplicas: deployment.Status.Replicas,
-		DesiredReplicas: *deployment.Spec.Replicas,
-		MaxReplicas:     *deployment.Spec.Replicas, // Default to desired, will be overridden by HPA if exists
+	}
+
+	if deployment.Spec.Replicas != nil {
+		dm.DesiredReplicas = *deployment.Spec.Replicas
+		dm.MaxReplicas = *deployment.Spec.Replicas
+	} else {
+		dm.DesiredReplicas = 0
+		dm.MaxReplicas = 0
 	}
 
 	// Get label selector from deployment
@@ -80,7 +87,9 @@ func getDeploymentMetrics(ctx context.Context, clientset *kubernetes.Clientset, 
 	podMetricsList, err := metricsClientset.MetricsV1beta1().PodMetricses(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: labelSelector,
 	})
-	if err == nil {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Error getting pod metrics: %v\n", err)
+	} else {
 		for _, podMetrics := range podMetricsList.Items {
 			for _, container := range podMetrics.Containers {
 				if cpu := container.Usage.Cpu(); cpu != nil {
@@ -95,7 +104,9 @@ func getDeploymentMetrics(ctx context.Context, clientset *kubernetes.Clientset, 
 
 	// Get HPA information
 	hpaList, err := clientset.AutoscalingV1().HorizontalPodAutoscalers(namespace).List(ctx, metav1.ListOptions{})
-	if err == nil {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Error listing HPA: %v\n", err)
+	} else {
 		for _, hpa := range hpaList.Items {
 			if hpa.Spec.ScaleTargetRef.Name == name && hpa.Spec.ScaleTargetRef.Kind == "Deployment" {
 				dm.MaxReplicas = hpa.Spec.MaxReplicas

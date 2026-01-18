@@ -115,55 +115,79 @@ func parseResourceValue(value string, isCPU bool) (int64, error) {
 	value = strings.TrimSpace(value)
 
 	if isCPU {
-		// Parse CPU: can be "1000m", "1.5", "2 cores", etc.
 		if strings.HasSuffix(value, "m") {
-			// Millicores
 			var millis int64
-			_, err := fmt.Sscanf(value, "%dm", &millis)
+			n, err := fmt.Sscanf(value, "%dm", &millis)
+			if n == 0 {
+				return 0, fmt.Errorf("invalid CPU value: %s", value)
+			}
 			return millis, err
 		} else if strings.Contains(value, "core") {
-			// Cores format like "1.5 cores" or "2 cores"
 			var cores float64
-			_, err := fmt.Sscanf(value, "%f", &cores)
+			n, err := fmt.Sscanf(value, "%f", &cores)
+			if n == 0 {
+				return 0, fmt.Errorf("invalid CPU value: %s", value)
+			}
 			return int64(cores * 1000), err
 		} else {
-			// Assume it's a decimal number of cores
 			var cores float64
-			_, err := fmt.Sscanf(value, "%f", &cores)
+			n, err := fmt.Sscanf(value, "%f", &cores)
+			if n == 0 {
+				return 0, fmt.Errorf("invalid CPU value: %s", value)
+			}
 			return int64(cores * 1000), err
 		}
 	} else {
-		// Parse Memory: can be "256Mi", "1Gi", "512M", "1G", etc.
 		value = strings.ToUpper(value)
 
 		if strings.HasSuffix(value, "GI") {
 			var gib float64
-			_, err := fmt.Sscanf(value, "%fGI", &gib)
+			n, err := fmt.Sscanf(value, "%fGI", &gib)
+			if n == 0 {
+				return 0, fmt.Errorf("invalid memory value: %s", value)
+			}
 			return int64(gib * 1024 * 1024 * 1024), err
 		} else if strings.HasSuffix(value, "G") {
 			var gb float64
-			_, err := fmt.Sscanf(value, "%fG", &gb)
+			n, err := fmt.Sscanf(value, "%fG", &gb)
+			if n == 0 {
+				return 0, fmt.Errorf("invalid memory value: %s", value)
+			}
 			return int64(gb * 1000 * 1000 * 1000), err
 		} else if strings.HasSuffix(value, "MI") {
 			var mib float64
-			_, err := fmt.Sscanf(value, "%fMI", &mib)
+			n, err := fmt.Sscanf(value, "%fMI", &mib)
+			if n == 0 {
+				return 0, fmt.Errorf("invalid memory value: %s", value)
+			}
 			return int64(mib * 1024 * 1024), err
 		} else if strings.HasSuffix(value, "M") {
 			var mb float64
-			_, err := fmt.Sscanf(value, "%fM", &mb)
+			n, err := fmt.Sscanf(value, "%fM", &mb)
+			if n == 0 {
+				return 0, fmt.Errorf("invalid memory value: %s", value)
+			}
 			return int64(mb * 1000 * 1000), err
 		} else if strings.HasSuffix(value, "KI") {
 			var kib float64
-			_, err := fmt.Sscanf(value, "%fKI", &kib)
+			n, err := fmt.Sscanf(value, "%fKI", &kib)
+			if n == 0 {
+				return 0, fmt.Errorf("invalid memory value: %s", value)
+			}
 			return int64(kib * 1024), err
 		} else if strings.HasSuffix(value, "K") {
 			var kb float64
-			_, err := fmt.Sscanf(value, "%fK", &kb)
+			n, err := fmt.Sscanf(value, "%fK", &kb)
+			if n == 0 {
+				return 0, fmt.Errorf("invalid memory value: %s", value)
+			}
 			return int64(kb * 1000), err
 		} else {
-			// Assume bytes
 			var bytes int64
-			_, err := fmt.Sscanf(value, "%d", &bytes)
+			n, err := fmt.Sscanf(value, "%d", &bytes)
+			if n == 0 {
+				return 0, fmt.Errorf("invalid memory value: %s", value)
+			}
 			return bytes, err
 		}
 	}

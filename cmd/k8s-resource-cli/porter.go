@@ -30,13 +30,13 @@ func getPorterApplicationMetrics(ctx context.Context, client *PorterClient, appN
 
 		// Show progress indicator with spinner
 		spinner := spinnerChars[i%len(spinnerChars)]
-		fmt.Fprintf(os.Stderr, "\r%s Loading application %d/%d: %s...\033[K", spinner, i+1, totalApps, app.Name)
+		showProgress(os.Stderr, spinner, i+1, totalApps, app.Name)
 
 		// Get application details
 		detail, err := client.GetApplication(ctx, app.ID)
 		if err != nil {
 			// Clear spinner line before showing warning
-			fmt.Fprintf(os.Stderr, "\r\033[K")
+			clearProgress(os.Stderr)
 			fmt.Fprintf(os.Stderr, "Warning: Error getting application %s: %v\n", app.Name, err)
 			continue
 		}
@@ -59,7 +59,7 @@ func getPorterApplicationMetrics(ctx context.Context, client *PorterClient, appN
 			}
 		} else if client.Debug {
 			// Clear spinner line before showing debug message
-			fmt.Fprintf(os.Stderr, "\r\033[K")
+			clearProgress(os.Stderr)
 			fmt.Fprintf(os.Stderr, "DEBUG - Error getting deployment target %s: %v\n", detail.DeploymentTargetID, err)
 		}
 
@@ -107,39 +107,10 @@ func getPorterApplicationMetrics(ctx context.Context, client *PorterClient, appN
 func (c *PorterClient) ListApplications(ctx context.Context) ([]PorterApplication, error) {
 	url := fmt.Sprintf("%s/api/v2/alpha/projects/%s/applications?limit=100", c.BaseURL, c.ProjectID)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// Print debug output if enabled
-	if c.Debug {
-		fmt.Fprintf(os.Stderr, "DEBUG - ListApplications Raw Response:\n%s\n\n", string(body))
-	}
-
 	var response PorterListApplicationsResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	err := c.doAPIRequest(ctx, "GET", url, &response)
+	if err != nil {
+		return nil, err
 	}
 
 	return response.Applications, nil
@@ -148,39 +119,10 @@ func (c *PorterClient) ListApplications(ctx context.Context) ([]PorterApplicatio
 func (c *PorterClient) GetApplication(ctx context.Context, appID string) (*PorterApplicationDetail, error) {
 	url := fmt.Sprintf("%s/api/v2/alpha/projects/%s/applications/%s", c.BaseURL, c.ProjectID, appID)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// Print debug output if enabled
-	if c.Debug {
-		fmt.Fprintf(os.Stderr, "DEBUG - GetApplication(%s) Raw Response:\n%s\n\n", appID, string(body))
-	}
-
 	var app PorterApplicationDetail
-	if err := json.Unmarshal(body, &app); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	err := c.doAPIRequest(ctx, "GET", url, &app)
+	if err != nil {
+		return nil, err
 	}
 
 	return &app, nil
@@ -205,42 +147,12 @@ func (c *PorterClient) GetDeploymentTarget(ctx context.Context, targetID string)
 func (c *PorterClient) loadDeploymentTargets(ctx context.Context) error {
 	url := fmt.Sprintf("%s/api/v2/projects/%s/deployment-targets", c.BaseURL, c.ProjectID)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// Print debug output if enabled
-	if c.Debug {
-		fmt.Fprintf(os.Stderr, "DEBUG - ListDeploymentTargets Raw Response:\n%s\n\n", string(body))
-	}
-
 	var response PorterListDeploymentTargetsResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		return fmt.Errorf("failed to decode response: %w", err)
+	err := c.doAPIRequest(ctx, "GET", url, &response)
+	if err != nil {
+		return err
 	}
 
-	// Cache all deployment targets
 	for i := range response.DeploymentTargets {
 		target := &response.DeploymentTargets[i]
 		c.deploymentTargetCache[target.ID] = target
@@ -269,7 +181,23 @@ func (c *PorterClient) GetCluster(ctx context.Context, clusterID int) (*PorterCl
 func (c *PorterClient) loadClusters(ctx context.Context) error {
 	url := fmt.Sprintf("%s/api/v2/projects/%s/clusters", c.BaseURL, c.ProjectID)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	var response PorterListClustersResponse
+	err := c.doAPIRequest(ctx, "GET", url, &response)
+	if err != nil {
+		return err
+	}
+
+	for i := range response.Clusters {
+		cluster := &response.Clusters[i]
+		c.clusterCache[cluster.ID] = cluster
+	}
+
+	c.clustersLoaded = true
+	return nil
+}
+
+func (c *PorterClient) doAPIRequest(ctx context.Context, method, url string, result interface{}) error {
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		return err
 	}
@@ -283,33 +211,26 @@ func (c *PorterClient) loadClusters(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Read response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	// Print debug output if enabled
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
 	if c.Debug {
-		fmt.Fprintf(os.Stderr, "DEBUG - ListClusters Raw Response:\n%s\n\n", string(body))
+		fmt.Fprintf(os.Stderr, "DEBUG - %s %s Raw Response:\n%s\n\n", method, url, string(body))
 	}
 
-	var response PorterListClustersResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		return fmt.Errorf("failed to decode response: %w", err)
-	}
+	return json.Unmarshal(body, result)
+}
 
-	// Cache all clusters
-	for i := range response.Clusters {
-		cluster := &response.Clusters[i]
-		c.clusterCache[cluster.ID] = cluster
-	}
+func showProgress(stderr interface{ Write([]byte) (int, error) }, spinner string, current, total int, name string) {
+	fmt.Fprintf(stderr, "\r%s Loading application %d/%d: %s...\033[K", spinner, current, total, name)
+}
 
-	c.clustersLoaded = true
-	return nil
+func clearProgress(stderr interface{ Write([]byte) (int, error) }) {
+	fmt.Fprintf(stderr, "\r\033[K")
 }
