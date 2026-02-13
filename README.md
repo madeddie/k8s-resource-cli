@@ -1,6 +1,7 @@
 # Kubernetes Resource CLI Tool
+![vibe-coded](https://img.shields.io/badge/vibe-coded-blue)
 
-A vibe-coded CLI tool written in Go that interfaces with the Kubernetes API to retrieve resource requests and resource usage of pods in deployments.
+A CLI tool written in Go that interfaces with the Kubernetes API to retrieve resource requests and resource usage of pods in deployments.
 
 ## Features
 
