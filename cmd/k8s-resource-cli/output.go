@@ -7,16 +7,16 @@ import (
 	"text/tabwriter"
 )
 
-func printResults(deployments []DeploymentMetrics, outputType string, usePorter bool, totalOnly bool) {
+type resultRow struct {
+	name, typ, ns, replicas, cpu, memory string
+}
+
+func printResults(deployments []DeploymentMetrics, outputType string, usePorter bool, totalOnly bool, format string) {
 	if len(deployments) == 0 {
 		fmt.Println("No deployments found")
 		return
 	}
 
-	// Create a tabwriter for aligned output
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-
-	// Check if there are any CronJobs in the list to determine if we need TYPE column
 	hasCronJobs := false
 	for _, dm := range deployments {
 		if dm.Type == "CronJob" {
@@ -25,19 +25,12 @@ func printResults(deployments []DeploymentMetrics, outputType string, usePorter 
 		}
 	}
 
-	// Print header (unless totalOnly is set)
-	if !totalOnly {
-		namespaceHeader := "NAMESPACE"
-		if usePorter {
-			namespaceHeader = "TARGET"
-		}
-		if hasCronJobs {
-			fmt.Fprintf(w, "NAME\tTYPE\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
-		} else {
-			fmt.Fprintf(w, "DEPLOYMENT\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
-		}
+	namespaceHeader := "NAMESPACE"
+	if usePorter {
+		namespaceHeader = "TARGET"
 	}
 
+	var rows []resultRow
 	var totalCPU, totalMemory int64
 
 	for _, dm := range deployments {
@@ -45,10 +38,8 @@ func printResults(deployments []DeploymentMetrics, outputType string, usePorter 
 
 		switch outputType {
 		case OutputTypeUsage, OutputTypeRequests:
-			// Show current/max replicas
 			replicas = fmt.Sprintf("%d/%d", dm.CurrentReplicas, dm.MaxReplicas)
 		case OutputTypeMaxRequests:
-			// Show only max replicas
 			replicas = fmt.Sprintf("%d", dm.MaxReplicas)
 		}
 
@@ -65,13 +56,11 @@ func printResults(deployments []DeploymentMetrics, outputType string, usePorter 
 			totalMemory += dm.Requests.Memory
 		case OutputTypeMaxRequests:
 			if dm.MaxReplicas > dm.DesiredReplicas {
-				// Has HPA, use max requests
 				cpu = formatCPU(dm.MaxRequests.CPU)
 				memory = formatMemory(dm.MaxRequests.Memory)
 				totalCPU += dm.MaxRequests.CPU
 				totalMemory += dm.MaxRequests.Memory
 			} else {
-				// No HPA, use current requests as max
 				cpu = formatCPU(dm.Requests.CPU)
 				memory = formatMemory(dm.Requests.Memory)
 				totalCPU += dm.Requests.CPU
@@ -79,25 +68,63 @@ func printResults(deployments []DeploymentMetrics, outputType string, usePorter 
 			}
 		}
 
-		// Only print individual lines if totalOnly is not set
-		if !totalOnly {
+		rows = append(rows, resultRow{dm.Name, dm.Type, dm.Namespace, replicas, cpu, memory})
+	}
+
+	if format == FormatMarkdown {
+		printMarkdownResults(rows, namespaceHeader, hasCronJobs, totalOnly, totalCPU, totalMemory)
+	} else {
+		printTableResults(rows, namespaceHeader, hasCronJobs, totalOnly, totalCPU, totalMemory)
+	}
+}
+
+func printTableResults(rows []resultRow, namespaceHeader string, hasCronJobs bool, totalOnly bool, totalCPU, totalMemory int64) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+
+	if !totalOnly {
+		if hasCronJobs {
+			fmt.Fprintf(w, "NAME\tTYPE\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
+		} else {
+			fmt.Fprintf(w, "DEPLOYMENT\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
+		}
+		for _, r := range rows {
 			if hasCronJobs {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", dm.Name, dm.Type, dm.Namespace, replicas, cpu, memory)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", r.name, r.typ, r.ns, r.replicas, r.cpu, r.memory)
 			} else {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", dm.Name, dm.Namespace, replicas, cpu, memory)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.name, r.ns, r.replicas, r.cpu, r.memory)
 			}
 		}
 	}
 
-	// Print totals row
 	if hasCronJobs {
 		fmt.Fprintf(w, "TOTAL\t\t\t\t%s\t%s\n", formatCPU(totalCPU), formatMemory(totalMemory))
 	} else {
 		fmt.Fprintf(w, "TOTAL\t\t\t%s\t%s\n", formatCPU(totalCPU), formatMemory(totalMemory))
 	}
 
-	// Flush the writer to output everything
 	w.Flush()
+}
+
+func printMarkdownResults(rows []resultRow, namespaceHeader string, hasCronJobs bool, totalOnly bool, totalCPU, totalMemory int64) {
+	if hasCronJobs {
+		fmt.Printf("| NAME | TYPE | %s | REPLICAS | CPU | MEMORY |\n", namespaceHeader)
+		fmt.Println("| --- | --- | --- | --- | --- | --- |")
+		if !totalOnly {
+			for _, r := range rows {
+				fmt.Printf("| %s | %s | %s | %s | %s | %s |\n", r.name, r.typ, r.ns, r.replicas, r.cpu, r.memory)
+			}
+		}
+		fmt.Printf("| **TOTAL** | | | | **%s** | **%s** |\n", formatCPU(totalCPU), formatMemory(totalMemory))
+	} else {
+		fmt.Printf("| DEPLOYMENT | %s | REPLICAS | CPU | MEMORY |\n", namespaceHeader)
+		fmt.Println("| --- | --- | --- | --- | --- |")
+		if !totalOnly {
+			for _, r := range rows {
+				fmt.Printf("| %s | %s | %s | %s | %s |\n", r.name, r.ns, r.replicas, r.cpu, r.memory)
+			}
+		}
+		fmt.Printf("| **TOTAL** | | | **%s** | **%s** |\n", formatCPU(totalCPU), formatMemory(totalMemory))
+	}
 }
 
 func getEnvDefault(key, defaultValue string) string {

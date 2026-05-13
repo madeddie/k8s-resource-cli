@@ -8,6 +8,9 @@ const (
 	OutputTypeUsage       = "usage"
 	OutputTypeRequests    = "requests"
 	OutputTypeMaxRequests = "max-requests"
+
+	FormatTable    = "table"
+	FormatMarkdown = "markdown"
 )
 
 type ResourceMetrics struct {

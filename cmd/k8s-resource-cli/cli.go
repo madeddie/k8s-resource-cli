@@ -32,6 +32,7 @@ func runCLI() {
 	var labelSelector string
 	var includeCronJobs bool
 	var totalOnly bool
+	var format string
 
 	// Default kubeconfig path: KUBECONFIG env var, then ~/.kube/config
 	defaultKubeconfig := os.Getenv("KUBECONFIG")
@@ -57,6 +58,7 @@ func runCLI() {
 	flag.StringVar(&labelSelector, "selector", "", "Label selector to filter deployments (alias for -l)")
 	flag.BoolVar(&includeCronJobs, "include-cronjobs", false, "Include CronJobs in the resource calculation")
 	flag.BoolVar(&totalOnly, "total-only", false, "Show only the total line, hide individual resources")
+	flag.StringVar(&format, "format", FormatTable, "Output format: table or markdown")
 	flag.Parse()
 
 	// Handle version flag
@@ -68,6 +70,12 @@ func runCLI() {
 	// Validate output type
 	if outputType != OutputTypeUsage && outputType != OutputTypeRequests && outputType != OutputTypeMaxRequests {
 		fmt.Fprintf(os.Stderr, "Error: Invalid output type '%s'. Must be 'usage', 'requests', or 'max-requests'\n", outputType)
+		os.Exit(1)
+	}
+
+	// Validate format
+	if format != FormatTable && format != FormatMarkdown {
+		fmt.Fprintf(os.Stderr, "Error: Invalid format '%s'. Must be 'table' or 'markdown'\n", format)
 		os.Exit(1)
 	}
 
@@ -129,7 +137,7 @@ func runCLI() {
 		}
 	}
 
-	printResults(deployments, outputType, usePorter, totalOnly)
+	printResults(deployments, outputType, usePorter, totalOnly, format)
 }
 
 func validateFlags(usePorter bool, namespace string, allNamespaces bool, deploymentName string, labelSelector string) {
