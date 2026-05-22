@@ -8,6 +8,7 @@ const (
 	OutputTypeUsage       = "usage"
 	OutputTypeRequests    = "requests"
 	OutputTypeMaxRequests = "max-requests"
+	OutputTypeCombined    = "combined"
 
 	FormatTable    = "table"
 	FormatMarkdown = "markdown"

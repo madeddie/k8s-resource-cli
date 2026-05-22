@@ -31,13 +31,15 @@ func printResults(deployments []DeploymentMetrics, outputType string, usePorter 
 	}
 
 	var rows []resultRow
-	var totalCPU, totalMemory int64
+	var totalUsageCPU, totalUsageMemory int64
+	var totalRequestsCPU, totalRequestsMemory int64
+	var totalMaxCPU, totalMaxMemory int64
 
 	for _, dm := range deployments {
 		var cpu, memory, replicas string
 
 		switch outputType {
-		case OutputTypeUsage, OutputTypeRequests:
+		case OutputTypeUsage, OutputTypeRequests, OutputTypeCombined:
 			replicas = fmt.Sprintf("%d/%d", dm.CurrentReplicas, dm.MaxReplicas)
 		case OutputTypeMaxRequests:
 			replicas = fmt.Sprintf("%d", dm.MaxReplicas)
@@ -47,38 +49,61 @@ func printResults(deployments []DeploymentMetrics, outputType string, usePorter 
 		case OutputTypeUsage:
 			cpu = formatCPU(dm.Usage.CPU)
 			memory = formatMemory(dm.Usage.Memory)
-			totalCPU += dm.Usage.CPU
-			totalMemory += dm.Usage.Memory
 		case OutputTypeRequests:
 			cpu = formatCPU(dm.Requests.CPU)
 			memory = formatMemory(dm.Requests.Memory)
-			totalCPU += dm.Requests.CPU
-			totalMemory += dm.Requests.Memory
 		case OutputTypeMaxRequests:
 			if dm.MaxReplicas > dm.DesiredReplicas {
 				cpu = formatCPU(dm.MaxRequests.CPU)
 				memory = formatMemory(dm.MaxRequests.Memory)
-				totalCPU += dm.MaxRequests.CPU
-				totalMemory += dm.MaxRequests.Memory
 			} else {
 				cpu = formatCPU(dm.Requests.CPU)
 				memory = formatMemory(dm.Requests.Memory)
-				totalCPU += dm.Requests.CPU
-				totalMemory += dm.Requests.Memory
 			}
+		case OutputTypeCombined:
+			cpu = formatCPUPair(dm.Usage.CPU, dm.Requests.CPU)
+			memory = formatMemoryPair(dm.Usage.Memory, dm.Requests.Memory)
+		}
+
+		totalUsageCPU += dm.Usage.CPU
+		totalUsageMemory += dm.Usage.Memory
+		totalRequestsCPU += dm.Requests.CPU
+		totalRequestsMemory += dm.Requests.Memory
+		if dm.MaxReplicas > dm.DesiredReplicas {
+			totalMaxCPU += dm.MaxRequests.CPU
+			totalMaxMemory += dm.MaxRequests.Memory
+		} else {
+			totalMaxCPU += dm.Requests.CPU
+			totalMaxMemory += dm.Requests.Memory
 		}
 
 		rows = append(rows, resultRow{dm.Name, dm.Type, dm.Namespace, replicas, cpu, memory})
 	}
 
+	var totalCPUStr, totalMemoryStr string
+	switch outputType {
+	case OutputTypeUsage:
+		totalCPUStr = formatCPU(totalUsageCPU)
+		totalMemoryStr = formatMemory(totalUsageMemory)
+	case OutputTypeRequests:
+		totalCPUStr = formatCPU(totalRequestsCPU)
+		totalMemoryStr = formatMemory(totalRequestsMemory)
+	case OutputTypeMaxRequests:
+		totalCPUStr = formatCPU(totalMaxCPU)
+		totalMemoryStr = formatMemory(totalMaxMemory)
+	case OutputTypeCombined:
+		totalCPUStr = formatCPUPair(totalUsageCPU, totalRequestsCPU)
+		totalMemoryStr = formatMemoryPair(totalUsageMemory, totalRequestsMemory)
+	}
+
 	if format == FormatMarkdown {
-		printMarkdownResults(rows, namespaceHeader, hasCronJobs, totalOnly, totalCPU, totalMemory)
+		printMarkdownResults(rows, namespaceHeader, hasCronJobs, totalOnly, totalCPUStr, totalMemoryStr)
 	} else {
-		printTableResults(rows, namespaceHeader, hasCronJobs, totalOnly, totalCPU, totalMemory)
+		printTableResults(rows, namespaceHeader, hasCronJobs, totalOnly, totalCPUStr, totalMemoryStr)
 	}
 }
 
-func printTableResults(rows []resultRow, namespaceHeader string, hasCronJobs bool, totalOnly bool, totalCPU, totalMemory int64) {
+func printTableResults(rows []resultRow, namespaceHeader string, hasCronJobs bool, totalOnly bool, totalCPUStr, totalMemoryStr string) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 
 	if !totalOnly {
@@ -97,15 +122,15 @@ func printTableResults(rows []resultRow, namespaceHeader string, hasCronJobs boo
 	}
 
 	if hasCronJobs {
-		fmt.Fprintf(w, "TOTAL\t\t\t\t%s\t%s\n", formatCPU(totalCPU), formatMemory(totalMemory))
+		fmt.Fprintf(w, "TOTAL\t\t\t\t%s\t%s\n", totalCPUStr, totalMemoryStr)
 	} else {
-		fmt.Fprintf(w, "TOTAL\t\t\t%s\t%s\n", formatCPU(totalCPU), formatMemory(totalMemory))
+		fmt.Fprintf(w, "TOTAL\t\t\t%s\t%s\n", totalCPUStr, totalMemoryStr)
 	}
 
 	w.Flush()
 }
 
-func printMarkdownResults(rows []resultRow, namespaceHeader string, hasCronJobs bool, totalOnly bool, totalCPU, totalMemory int64) {
+func printMarkdownResults(rows []resultRow, namespaceHeader string, hasCronJobs bool, totalOnly bool, totalCPUStr, totalMemoryStr string) {
 	if hasCronJobs {
 		fmt.Printf("| NAME | TYPE | %s | REPLICAS | CPU | MEMORY |\n", namespaceHeader)
 		fmt.Println("| --- | --- | --- | --- | --- | --- |")
@@ -114,7 +139,7 @@ func printMarkdownResults(rows []resultRow, namespaceHeader string, hasCronJobs 
 				fmt.Printf("| %s | %s | %s | %s | %s | %s |\n", r.name, r.typ, r.ns, r.replicas, r.cpu, r.memory)
 			}
 		}
-		fmt.Printf("| **TOTAL** | | | | **%s** | **%s** |\n", formatCPU(totalCPU), formatMemory(totalMemory))
+		fmt.Printf("| **TOTAL** | | | | **%s** | **%s** |\n", totalCPUStr, totalMemoryStr)
 	} else {
 		fmt.Printf("| DEPLOYMENT | %s | REPLICAS | CPU | MEMORY |\n", namespaceHeader)
 		fmt.Println("| --- | --- | --- | --- | --- |")
@@ -123,7 +148,7 @@ func printMarkdownResults(rows []resultRow, namespaceHeader string, hasCronJobs 
 				fmt.Printf("| %s | %s | %s | %s | %s |\n", r.name, r.ns, r.replicas, r.cpu, r.memory)
 			}
 		}
-		fmt.Printf("| **TOTAL** | | | **%s** | **%s** |\n", formatCPU(totalCPU), formatMemory(totalMemory))
+		fmt.Printf("| **TOTAL** | | | **%s** | **%s** |\n", totalCPUStr, totalMemoryStr)
 	}
 }
 
@@ -218,6 +243,29 @@ func parseResourceValue(value string, isCPU bool) (int64, error) {
 			return bytes, err
 		}
 	}
+}
+
+func formatCPUPair(usage, requests int64) string {
+	if requests >= 1000 || usage >= 1000 {
+		return fmt.Sprintf("%.2f / %.2f cores", float64(usage)/1000.0, float64(requests)/1000.0)
+	}
+	return fmt.Sprintf("%dm / %dm", usage, requests)
+}
+
+func formatMemoryPair(usage, requests int64) string {
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+	)
+	if requests >= GB || usage >= GB {
+		return fmt.Sprintf("%.2f / %.2f GB", float64(usage)/float64(GB), float64(requests)/float64(GB))
+	} else if requests >= MB || usage >= MB {
+		return fmt.Sprintf("%.2f / %.2f MB", float64(usage)/float64(MB), float64(requests)/float64(MB))
+	} else if requests >= KB || usage >= KB {
+		return fmt.Sprintf("%.2f / %.2f KB", float64(usage)/float64(KB), float64(requests)/float64(KB))
+	}
+	return fmt.Sprintf("%d / %d B", usage, requests)
 }
 
 func formatCPU(milliCores int64) string {

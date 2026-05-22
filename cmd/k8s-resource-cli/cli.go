@@ -68,8 +68,8 @@ func runCLI() {
 	}
 
 	// Validate output type
-	if outputType != OutputTypeUsage && outputType != OutputTypeRequests && outputType != OutputTypeMaxRequests {
-		fmt.Fprintf(os.Stderr, "Error: Invalid output type '%s'. Must be 'usage', 'requests', or 'max-requests'\n", outputType)
+	if outputType != OutputTypeUsage && outputType != OutputTypeRequests && outputType != OutputTypeMaxRequests && outputType != OutputTypeCombined {
+		fmt.Fprintf(os.Stderr, "Error: Invalid output type '%s'. Must be 'usage', 'requests', 'max-requests', or 'combined'\n", outputType)
 		os.Exit(1)
 	}
 
