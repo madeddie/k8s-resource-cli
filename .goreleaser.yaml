@@ -1,0 +1,55 @@
+version: 2
+
+builds:
+  - main: ./cmd/k8s-resource-cli
+    binary: k8s-resource-cli
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+
+brews:
+  - name: k8s-resource-cli
+    repository:
+      owner: madeddie
+      name: homebrew-private
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/madeddie/k8s-resource-cli
+    description: CLI tool to retrieve resource requests and usage metrics for Kubernetes deployments and cronjobs
+    license: MIT
+    install: |
+      bin.install "k8s-resource-cli"
+    test: |
+      system "#{bin}/k8s-resource-cli", "--version"
