@@ -22,7 +22,7 @@ builds:
 
 archives:
   - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    format: tar.gz
+    formats: tar.gz
     format_overrides:
       - goos: windows
         formats:
@@ -40,8 +40,9 @@ changelog:
       - '^test:'
       - '^chore:'
 
-brews:
+homebrew_casks:
   - name: k8s-resource-cli
+    directory: Casks
     repository:
       owner: madeddie
       name: homebrew-private
@@ -49,7 +50,3 @@ brews:
     homepage: https://github.com/madeddie/k8s-resource-cli
     description: CLI tool to retrieve resource requests and usage metrics for Kubernetes deployments and cronjobs
     license: MIT
-    install: |
-      bin.install "k8s-resource-cli"
-    test: |
-      system "#{bin}/k8s-resource-cli", "--version"
