@@ -47,6 +47,12 @@ homebrew_casks:
       owner: madeddie
       name: homebrew-private
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/k8s-resource-cli"]
+          end
     homepage: https://github.com/madeddie/k8s-resource-cli
     description: CLI tool to retrieve resource requests and usage metrics for Kubernetes deployments and cronjobs
     license: MIT
