@@ -33,7 +33,7 @@ func getNamespaceFromKubeconfig(kubeconfigPath string) (string, error) {
 	return "default", nil
 }
 
-func getDeploymentMetrics(ctx context.Context, clientset *kubernetes.Clientset, metricsClientset *versioned.Clientset, namespace, name string) (DeploymentMetrics, error) {
+func getDeploymentMetrics(ctx context.Context, clientset *kubernetes.Clientset, metricsClientset *versioned.Clientset, namespace, name, nodeFilter string) (DeploymentMetrics, error) {
 	// Get the deployment first to get replicas information
 	deployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -63,12 +63,29 @@ func getDeploymentMetrics(ctx context.Context, clientset *kubernetes.Clientset, 
 		labelSelector = fmt.Sprintf("app=%s", name)
 	}
 
+	// Build list options, optionally filtering by node
+	listOptions := metav1.ListOptions{LabelSelector: labelSelector}
+	if nodeFilter != "" {
+		listOptions.FieldSelector = fmt.Sprintf("spec.nodeName=%s", nodeFilter)
+	}
+
 	// Get pods for this deployment
-	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: labelSelector,
-	})
+	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, listOptions)
 	if err != nil {
 		return dm, fmt.Errorf("error listing pods: %w", err)
+	}
+
+	// When filtering by node, override replica counts to reflect only pods on that node
+	if nodeFilter != "" {
+		dm.CurrentReplicas = int32(len(pods.Items))
+		dm.DesiredReplicas = int32(len(pods.Items))
+		dm.MaxReplicas = int32(len(pods.Items))
+	}
+
+	// Build set of pod names on the node (used to filter metrics below)
+	podNames := make(map[string]struct{}, len(pods.Items))
+	for _, pod := range pods.Items {
+		podNames[pod.Name] = struct{}{}
 	}
 
 	// Calculate requests from pod specs
@@ -91,6 +108,11 @@ func getDeploymentMetrics(ctx context.Context, clientset *kubernetes.Clientset, 
 		fmt.Fprintf(os.Stderr, "Warning: Error getting pod metrics: %v\n", err)
 	} else {
 		for _, podMetrics := range podMetricsList.Items {
+			if nodeFilter != "" {
+				if _, ok := podNames[podMetrics.Name]; !ok {
+					continue
+				}
+			}
 			for _, container := range podMetrics.Containers {
 				if cpu := container.Usage.Cpu(); cpu != nil {
 					dm.Usage.CPU += cpu.MilliValue()
@@ -128,7 +150,7 @@ func getDeploymentMetrics(ctx context.Context, clientset *kubernetes.Clientset, 
 	return dm, nil
 }
 
-func getCronJobMetrics(ctx context.Context, clientset *kubernetes.Clientset, metricsClientset *versioned.Clientset, namespace, name string) (DeploymentMetrics, error) {
+func getCronJobMetrics(ctx context.Context, clientset *kubernetes.Clientset, metricsClientset *versioned.Clientset, namespace, name, nodeFilter string) (DeploymentMetrics, error) {
 	// Get the cronjob first to get job template information
 	cronJob, err := clientset.BatchV1().CronJobs(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -175,11 +197,14 @@ func getCronJobMetrics(ctx context.Context, clientset *kubernetes.Clientset, met
 	if len(cronJob.Status.Active) > 0 {
 		// List all pods owned by jobs created by this cronjob
 		for _, activeJob := range cronJob.Status.Active {
-			pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+			podListOptions := metav1.ListOptions{
 				LabelSelector: fmt.Sprintf("job-name=%s", activeJob.Name),
-			})
+			}
+			if nodeFilter != "" {
+				podListOptions.FieldSelector = fmt.Sprintf("spec.nodeName=%s", nodeFilter)
+			}
+			pods, err := clientset.CoreV1().Pods(namespace).List(ctx, podListOptions)
 			if err == nil {
-				// Get current usage from metrics API for these pods
 				for _, pod := range pods.Items {
 					podMetrics, err := metricsClientset.MetricsV1beta1().PodMetricses(namespace).Get(ctx, pod.Name, metav1.GetOptions{})
 					if err == nil {

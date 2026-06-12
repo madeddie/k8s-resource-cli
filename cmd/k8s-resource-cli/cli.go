@@ -33,6 +33,7 @@ func runCLI() {
 	var includeCronJobs bool
 	var totalOnly bool
 	var format string
+	var nodeFilter string
 
 	// Default kubeconfig path: KUBECONFIG env var, then ~/.kube/config
 	defaultKubeconfig := os.Getenv("KUBECONFIG")
@@ -59,6 +60,7 @@ func runCLI() {
 	flag.BoolVar(&includeCronJobs, "include-cronjobs", false, "Include CronJobs in the resource calculation")
 	flag.BoolVar(&totalOnly, "total-only", false, "Show only the total line, hide individual resources")
 	flag.StringVar(&format, "format", FormatTable, "Output format: table or markdown")
+	flag.StringVar(&nodeFilter, "node", "", "Filter results to pods scheduled on this node")
 	flag.Parse()
 
 	// Handle version flag
@@ -99,6 +101,9 @@ func runCLI() {
 		if includeCronJobs {
 			fmt.Fprintf(os.Stderr, "Warning: --include-cronjobs flag is only supported in Kubernetes mode, ignoring\n")
 		}
+		if nodeFilter != "" {
+			fmt.Fprintf(os.Stderr, "Warning: --node flag is only supported in Kubernetes mode, ignoring\n")
+		}
 
 		client := &PorterClient{
 			BaseURL:               porterBaseURL,
@@ -129,10 +134,10 @@ func runCLI() {
 			}
 		}
 
-		deployments = getAllDeployments(ctx, clientset, metricsClientset, namespace, deploymentName, labelSelector, allNamespaces)
+		deployments = getAllDeployments(ctx, clientset, metricsClientset, namespace, deploymentName, labelSelector, nodeFilter, allNamespaces)
 
 		if includeCronJobs {
-			cronJobDeployments := getAllCronJobs(ctx, clientset, metricsClientset, namespace, deploymentName, labelSelector, allNamespaces)
+			cronJobDeployments := getAllCronJobs(ctx, clientset, metricsClientset, namespace, deploymentName, labelSelector, nodeFilter, allNamespaces)
 			deployments = append(deployments, cronJobDeployments...)
 		}
 	}
@@ -174,7 +179,7 @@ func setupKubernetesClients(kubeconfig string) (*kubernetes.Clientset, *versione
 	return clientset, metricsClientset
 }
 
-func getAllDeployments(ctx context.Context, clientset *kubernetes.Clientset, metricsClientset *versioned.Clientset, namespace, deploymentName, labelSelector string, allNamespaces bool) []DeploymentMetrics {
+func getAllDeployments(ctx context.Context, clientset *kubernetes.Clientset, metricsClientset *versioned.Clientset, namespace, deploymentName, labelSelector, nodeFilter string, allNamespaces bool) []DeploymentMetrics {
 	var deployments []DeploymentMetrics
 
 	if deploymentName != "" {
@@ -188,10 +193,13 @@ func getAllDeployments(ctx context.Context, clientset *kubernetes.Clientset, met
 			for _, deployment := range deploymentList.Items {
 				if deployment.Name == deploymentName {
 					found = true
-					metrics, err := getDeploymentMetrics(ctx, clientset, metricsClientset, deployment.Namespace, deployment.Name)
+					metrics, err := getDeploymentMetrics(ctx, clientset, metricsClientset, deployment.Namespace, deployment.Name, nodeFilter)
 					if err != nil {
 						fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for deployment %s in namespace %s: %v\n",
 							deploymentName, deployment.Namespace, err)
+						continue
+					}
+					if nodeFilter != "" && metrics.CurrentReplicas == 0 && metrics.Requests.CPU == 0 && metrics.Requests.Memory == 0 {
 						continue
 					}
 					deployments = append(deployments, metrics)
@@ -207,7 +215,7 @@ func getAllDeployments(ctx context.Context, clientset *kubernetes.Clientset, met
 				fmt.Fprintf(os.Stderr, "Error getting deployment %s: %v\n", deploymentName, err)
 				os.Exit(1)
 			}
-			metrics, err := getDeploymentMetrics(ctx, clientset, metricsClientset, deployment.Namespace, deployment.Name)
+			metrics, err := getDeploymentMetrics(ctx, clientset, metricsClientset, deployment.Namespace, deployment.Name, nodeFilter)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error getting metrics for deployment %s: %v\n", deploymentName, err)
 				os.Exit(1)
@@ -225,9 +233,12 @@ func getAllDeployments(ctx context.Context, clientset *kubernetes.Clientset, met
 			os.Exit(1)
 		}
 		for _, deployment := range deploymentList.Items {
-			metrics, err := getDeploymentMetrics(ctx, clientset, metricsClientset, deployment.Namespace, deployment.Name)
+			metrics, err := getDeploymentMetrics(ctx, clientset, metricsClientset, deployment.Namespace, deployment.Name, nodeFilter)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for deployment %s: %v\n", deployment.Name, err)
+				continue
+			}
+			if nodeFilter != "" && metrics.CurrentReplicas == 0 && metrics.Requests.CPU == 0 && metrics.Requests.Memory == 0 {
 				continue
 			}
 			deployments = append(deployments, metrics)
@@ -237,7 +248,7 @@ func getAllDeployments(ctx context.Context, clientset *kubernetes.Clientset, met
 	return deployments
 }
 
-func getAllCronJobs(ctx context.Context, clientset *kubernetes.Clientset, metricsClientset *versioned.Clientset, namespace, deploymentName, labelSelector string, allNamespaces bool) []DeploymentMetrics {
+func getAllCronJobs(ctx context.Context, clientset *kubernetes.Clientset, metricsClientset *versioned.Clientset, namespace, deploymentName, labelSelector, nodeFilter string, allNamespaces bool) []DeploymentMetrics {
 	var deployments []DeploymentMetrics
 
 	if deploymentName != "" {
@@ -251,10 +262,13 @@ func getAllCronJobs(ctx context.Context, clientset *kubernetes.Clientset, metric
 			for _, cronJob := range cronJobList.Items {
 				if cronJob.Name == deploymentName {
 					found = true
-					metrics, err := getCronJobMetrics(ctx, clientset, metricsClientset, cronJob.Namespace, cronJob.Name)
+					metrics, err := getCronJobMetrics(ctx, clientset, metricsClientset, cronJob.Namespace, cronJob.Name, nodeFilter)
 					if err != nil {
 						fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for cronjob %s in namespace %s: %v\n",
 							deploymentName, cronJob.Namespace, err)
+						continue
+					}
+					if nodeFilter != "" && metrics.CurrentReplicas == 0 && metrics.Requests.CPU == 0 && metrics.Requests.Memory == 0 {
 						continue
 					}
 					deployments = append(deployments, metrics)
@@ -268,7 +282,7 @@ func getAllCronJobs(ctx context.Context, clientset *kubernetes.Clientset, metric
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: Error getting cronjob %s: %v\n", deploymentName, err)
 			} else {
-				metrics, err := getCronJobMetrics(ctx, clientset, metricsClientset, cronJob.Namespace, cronJob.Name)
+				metrics, err := getCronJobMetrics(ctx, clientset, metricsClientset, cronJob.Namespace, cronJob.Name, nodeFilter)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for cronjob %s: %v\n", deploymentName, err)
 				} else {
@@ -287,9 +301,12 @@ func getAllCronJobs(ctx context.Context, clientset *kubernetes.Clientset, metric
 			os.Exit(1)
 		}
 		for _, cronJob := range cronJobList.Items {
-			metrics, err := getCronJobMetrics(ctx, clientset, metricsClientset, cronJob.Namespace, cronJob.Name)
+			metrics, err := getCronJobMetrics(ctx, clientset, metricsClientset, cronJob.Namespace, cronJob.Name, nodeFilter)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: Error getting metrics for cronjob %s: %v\n", cronJob.Name, err)
+				continue
+			}
+			if nodeFilter != "" && metrics.CurrentReplicas == 0 && metrics.Requests.CPU == 0 && metrics.Requests.Memory == 0 {
 				continue
 			}
 			deployments = append(deployments, metrics)
