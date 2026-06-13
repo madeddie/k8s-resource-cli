@@ -29,6 +29,8 @@ type DeploymentMetrics struct {
 	Usage           ResourceMetrics
 	Requests        ResourceMetrics
 	MaxRequests     ResourceMetrics
+	AvgUsage        ResourceMetrics // average over time window (Prometheus mode)
+	MaxUsage        ResourceMetrics // peak over time window (Prometheus mode)
 }
 
 // Porter API data structures
@@ -82,6 +84,27 @@ type PorterCluster struct {
 
 type PorterListClustersResponse struct {
 	Clusters []PorterCluster `json:"clusters"`
+}
+
+type PrometheusClient struct {
+	BaseURL    string
+	HTTPClient *http.Client
+	Debug      bool
+}
+
+type PrometheusResponse struct {
+	Status string             `json:"status"`
+	Data   PrometheusDataBody `json:"data"`
+}
+
+type PrometheusDataBody struct {
+	ResultType string             `json:"resultType"`
+	Result     []PrometheusResult `json:"result"`
+}
+
+type PrometheusResult struct {
+	Metric map[string]string `json:"metric"`
+	Value  [2]interface{}    `json:"value"` // [timestamp, valueString]
 }
 
 type PorterClient struct {
