@@ -9,9 +9,10 @@ import (
 
 type resultRow struct {
 	name, typ, ns, replicas, cpu, memory string
+	cpuMax, memoryMax                    string // non-empty in Prometheus usage mode (avg/max pair)
 }
 
-func printResults(deployments []DeploymentMetrics, outputType string, usePorter bool, totalOnly bool, format string) {
+func printResults(deployments []DeploymentMetrics, outputType string, sourceMode string, totalOnly bool, format string) {
 	if len(deployments) == 0 {
 		fmt.Println("No deployments found")
 		return
@@ -26,17 +27,22 @@ func printResults(deployments []DeploymentMetrics, outputType string, usePorter 
 	}
 
 	namespaceHeader := "NAMESPACE"
-	if usePorter {
+	if sourceMode == "porter" {
 		namespaceHeader = "TARGET"
 	}
+
+	prometheusUsage := sourceMode == "prometheus" && outputType == OutputTypeUsage
 
 	var rows []resultRow
 	var totalUsageCPU, totalUsageMemory int64
 	var totalRequestsCPU, totalRequestsMemory int64
 	var totalMaxCPU, totalMaxMemory int64
+	var totalAvgUsageCPU, totalAvgUsageMemory int64
+	var totalMaxUsageCPU, totalMaxUsageMemory int64
 
 	for _, dm := range deployments {
 		var cpu, memory, replicas string
+		var cpuMax, memoryMax string
 
 		switch outputType {
 		case OutputTypeUsage, OutputTypeRequests, OutputTypeCombined:
@@ -45,24 +51,31 @@ func printResults(deployments []DeploymentMetrics, outputType string, usePorter 
 			replicas = fmt.Sprintf("%d", dm.MaxReplicas)
 		}
 
-		switch outputType {
-		case OutputTypeUsage:
-			cpu = formatCPU(dm.Usage.CPU)
-			memory = formatMemory(dm.Usage.Memory)
-		case OutputTypeRequests:
-			cpu = formatCPU(dm.Requests.CPU)
-			memory = formatMemory(dm.Requests.Memory)
-		case OutputTypeMaxRequests:
-			if dm.MaxReplicas > dm.DesiredReplicas {
-				cpu = formatCPU(dm.MaxRequests.CPU)
-				memory = formatMemory(dm.MaxRequests.Memory)
-			} else {
+		if prometheusUsage {
+			cpu = formatCPU(dm.AvgUsage.CPU)
+			memory = formatMemory(dm.AvgUsage.Memory)
+			cpuMax = formatCPU(dm.MaxUsage.CPU)
+			memoryMax = formatMemory(dm.MaxUsage.Memory)
+		} else {
+			switch outputType {
+			case OutputTypeUsage:
+				cpu = formatCPU(dm.Usage.CPU)
+				memory = formatMemory(dm.Usage.Memory)
+			case OutputTypeRequests:
 				cpu = formatCPU(dm.Requests.CPU)
 				memory = formatMemory(dm.Requests.Memory)
+			case OutputTypeMaxRequests:
+				if dm.MaxReplicas > dm.DesiredReplicas {
+					cpu = formatCPU(dm.MaxRequests.CPU)
+					memory = formatMemory(dm.MaxRequests.Memory)
+				} else {
+					cpu = formatCPU(dm.Requests.CPU)
+					memory = formatMemory(dm.Requests.Memory)
+				}
+			case OutputTypeCombined:
+				cpu = formatCPUPair(dm.Usage.CPU, dm.Requests.CPU)
+				memory = formatMemoryPair(dm.Usage.Memory, dm.Requests.Memory)
 			}
-		case OutputTypeCombined:
-			cpu = formatCPUPair(dm.Usage.CPU, dm.Requests.CPU)
-			memory = formatMemoryPair(dm.Usage.Memory, dm.Requests.Memory)
 		}
 
 		totalUsageCPU += dm.Usage.CPU
@@ -76,52 +89,84 @@ func printResults(deployments []DeploymentMetrics, outputType string, usePorter 
 			totalMaxCPU += dm.Requests.CPU
 			totalMaxMemory += dm.Requests.Memory
 		}
+		totalAvgUsageCPU += dm.AvgUsage.CPU
+		totalAvgUsageMemory += dm.AvgUsage.Memory
+		totalMaxUsageCPU += dm.MaxUsage.CPU
+		totalMaxUsageMemory += dm.MaxUsage.Memory
 
-		rows = append(rows, resultRow{dm.Name, dm.Type, dm.Namespace, replicas, cpu, memory})
+		rows = append(rows, resultRow{dm.Name, dm.Type, dm.Namespace, replicas, cpu, memory, cpuMax, memoryMax})
 	}
 
-	var totalCPUStr, totalMemoryStr string
-	switch outputType {
-	case OutputTypeUsage:
-		totalCPUStr = formatCPU(totalUsageCPU)
-		totalMemoryStr = formatMemory(totalUsageMemory)
-	case OutputTypeRequests:
-		totalCPUStr = formatCPU(totalRequestsCPU)
-		totalMemoryStr = formatMemory(totalRequestsMemory)
-	case OutputTypeMaxRequests:
-		totalCPUStr = formatCPU(totalMaxCPU)
-		totalMemoryStr = formatMemory(totalMaxMemory)
-	case OutputTypeCombined:
-		totalCPUStr = formatCPUPair(totalUsageCPU, totalRequestsCPU)
-		totalMemoryStr = formatMemoryPair(totalUsageMemory, totalRequestsMemory)
+	var totalCPUStr, totalMemoryStr, totalCPUMaxStr, totalMemoryMaxStr string
+	if prometheusUsage {
+		totalCPUStr = formatCPU(totalAvgUsageCPU)
+		totalMemoryStr = formatMemory(totalAvgUsageMemory)
+		totalCPUMaxStr = formatCPU(totalMaxUsageCPU)
+		totalMemoryMaxStr = formatMemory(totalMaxUsageMemory)
+	} else {
+		switch outputType {
+		case OutputTypeUsage:
+			totalCPUStr = formatCPU(totalUsageCPU)
+			totalMemoryStr = formatMemory(totalUsageMemory)
+		case OutputTypeRequests:
+			totalCPUStr = formatCPU(totalRequestsCPU)
+			totalMemoryStr = formatMemory(totalRequestsMemory)
+		case OutputTypeMaxRequests:
+			totalCPUStr = formatCPU(totalMaxCPU)
+			totalMemoryStr = formatMemory(totalMaxMemory)
+		case OutputTypeCombined:
+			totalCPUStr = formatCPUPair(totalUsageCPU, totalRequestsCPU)
+			totalMemoryStr = formatMemoryPair(totalUsageMemory, totalRequestsMemory)
+		}
 	}
 
 	if format == FormatMarkdown {
-		printMarkdownResults(rows, namespaceHeader, hasCronJobs, totalOnly, totalCPUStr, totalMemoryStr)
+		printMarkdownResults(rows, namespaceHeader, hasCronJobs, prometheusUsage, totalOnly, totalCPUStr, totalMemoryStr, totalCPUMaxStr, totalMemoryMaxStr)
 	} else {
-		printTableResults(rows, namespaceHeader, hasCronJobs, totalOnly, totalCPUStr, totalMemoryStr)
+		printTableResults(rows, namespaceHeader, hasCronJobs, prometheusUsage, totalOnly, totalCPUStr, totalMemoryStr, totalCPUMaxStr, totalMemoryMaxStr)
 	}
 }
 
-func printTableResults(rows []resultRow, namespaceHeader string, hasCronJobs bool, totalOnly bool, totalCPUStr, totalMemoryStr string) {
+func printTableResults(rows []resultRow, namespaceHeader string, hasCronJobs, prometheusUsage bool, totalOnly bool, totalCPUStr, totalMemoryStr, totalCPUMaxStr, totalMemoryMaxStr string) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 
 	if !totalOnly {
-		if hasCronJobs {
-			fmt.Fprintf(w, "NAME\tTYPE\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
-		} else {
-			fmt.Fprintf(w, "DEPLOYMENT\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
-		}
-		for _, r := range rows {
+		if prometheusUsage {
 			if hasCronJobs {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", r.name, r.typ, r.ns, r.replicas, r.cpu, r.memory)
+				fmt.Fprintf(w, "NAME\tTYPE\t%s\tREPLICAS\tCPU AVG\tCPU MAX\tMEM AVG\tMEM MAX\n", namespaceHeader)
 			} else {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.name, r.ns, r.replicas, r.cpu, r.memory)
+				fmt.Fprintf(w, "DEPLOYMENT\t%s\tREPLICAS\tCPU AVG\tCPU MAX\tMEM AVG\tMEM MAX\n", namespaceHeader)
+			}
+			for _, r := range rows {
+				if hasCronJobs {
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.name, r.typ, r.ns, r.replicas, r.cpu, r.cpuMax, r.memory, r.memoryMax)
+				} else {
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.name, r.ns, r.replicas, r.cpu, r.cpuMax, r.memory, r.memoryMax)
+				}
+			}
+		} else {
+			if hasCronJobs {
+				fmt.Fprintf(w, "NAME\tTYPE\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
+			} else {
+				fmt.Fprintf(w, "DEPLOYMENT\t%s\tREPLICAS\tCPU\tMEMORY\n", namespaceHeader)
+			}
+			for _, r := range rows {
+				if hasCronJobs {
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", r.name, r.typ, r.ns, r.replicas, r.cpu, r.memory)
+				} else {
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.name, r.ns, r.replicas, r.cpu, r.memory)
+				}
 			}
 		}
 	}
 
-	if hasCronJobs {
+	if prometheusUsage {
+		if hasCronJobs {
+			fmt.Fprintf(w, "TOTAL\t\t\t\t%s\t%s\t%s\t%s\n", totalCPUStr, totalCPUMaxStr, totalMemoryStr, totalMemoryMaxStr)
+		} else {
+			fmt.Fprintf(w, "TOTAL\t\t\t%s\t%s\t%s\t%s\n", totalCPUStr, totalCPUMaxStr, totalMemoryStr, totalMemoryMaxStr)
+		}
+	} else if hasCronJobs {
 		fmt.Fprintf(w, "TOTAL\t\t\t\t%s\t%s\n", totalCPUStr, totalMemoryStr)
 	} else {
 		fmt.Fprintf(w, "TOTAL\t\t\t%s\t%s\n", totalCPUStr, totalMemoryStr)
@@ -130,8 +175,28 @@ func printTableResults(rows []resultRow, namespaceHeader string, hasCronJobs boo
 	w.Flush()
 }
 
-func printMarkdownResults(rows []resultRow, namespaceHeader string, hasCronJobs bool, totalOnly bool, totalCPUStr, totalMemoryStr string) {
-	if hasCronJobs {
+func printMarkdownResults(rows []resultRow, namespaceHeader string, hasCronJobs, prometheusUsage bool, totalOnly bool, totalCPUStr, totalMemoryStr, totalCPUMaxStr, totalMemoryMaxStr string) {
+	if prometheusUsage {
+		if hasCronJobs {
+			fmt.Printf("| NAME | TYPE | %s | REPLICAS | CPU AVG | CPU MAX | MEM AVG | MEM MAX |\n", namespaceHeader)
+			fmt.Println("| --- | --- | --- | --- | --- | --- | --- | --- |")
+			if !totalOnly {
+				for _, r := range rows {
+					fmt.Printf("| %s | %s | %s | %s | %s | %s | %s | %s |\n", r.name, r.typ, r.ns, r.replicas, r.cpu, r.cpuMax, r.memory, r.memoryMax)
+				}
+			}
+			fmt.Printf("| **TOTAL** | | | | **%s** | **%s** | **%s** | **%s** |\n", totalCPUStr, totalCPUMaxStr, totalMemoryStr, totalMemoryMaxStr)
+		} else {
+			fmt.Printf("| DEPLOYMENT | %s | REPLICAS | CPU AVG | CPU MAX | MEM AVG | MEM MAX |\n", namespaceHeader)
+			fmt.Println("| --- | --- | --- | --- | --- | --- | --- |")
+			if !totalOnly {
+				for _, r := range rows {
+					fmt.Printf("| %s | %s | %s | %s | %s | %s | %s |\n", r.name, r.ns, r.replicas, r.cpu, r.cpuMax, r.memory, r.memoryMax)
+				}
+			}
+			fmt.Printf("| **TOTAL** | | | **%s** | **%s** | **%s** | **%s** |\n", totalCPUStr, totalCPUMaxStr, totalMemoryStr, totalMemoryMaxStr)
+		}
+	} else if hasCronJobs {
 		fmt.Printf("| NAME | TYPE | %s | REPLICAS | CPU | MEMORY |\n", namespaceHeader)
 		fmt.Println("| --- | --- | --- | --- | --- | --- |")
 		if !totalOnly {

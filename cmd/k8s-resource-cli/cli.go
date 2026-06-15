@@ -26,6 +26,9 @@ func runCLI() {
 	var porterToken string
 	var porterProjectID string
 	var porterBaseURL string
+	var usePrometheus bool
+	var prometheusURL string
+	var prometheusWindow string
 	var debug bool
 	var showVersion bool
 	var allNamespaces bool
@@ -52,6 +55,9 @@ func runCLI() {
 	flag.StringVar(&porterToken, "porter-token", os.Getenv("PORTER_TOKEN"), "Porter API token (or set PORTER_TOKEN env var)")
 	flag.StringVar(&porterProjectID, "porter-project-id", os.Getenv("PORTER_PROJECT_ID"), "Porter project ID (or set PORTER_PROJECT_ID env var)")
 	flag.StringVar(&porterBaseURL, "porter-url", getEnvDefault("PORTER_BASE_URL", "https://dashboard.porter.run"), "Porter API base URL")
+	flag.BoolVar(&usePrometheus, "prometheus", false, "Use Prometheus as data source for historical usage")
+	flag.StringVar(&prometheusURL, "prometheus-url", os.Getenv("PROMETHEUS_URL"), "Prometheus base URL (or set PROMETHEUS_URL env var)")
+	flag.StringVar(&prometheusWindow, "window", "7d", "Lookback window for Prometheus queries (Prometheus duration, e.g. 1h, 7d, 30d)")
 	flag.BoolVar(&debug, "debug", false, "Enable debug output")
 	flag.BoolVar(&allNamespaces, "A", false, "List resources across all namespaces")
 	flag.BoolVar(&allNamespaces, "all-namespaces", false, "List resources across all namespaces")
@@ -81,12 +87,47 @@ func runCLI() {
 		os.Exit(1)
 	}
 
-	validateFlags(usePorter, namespace, allNamespaces, deploymentName, labelSelector)
+	validateFlags(usePorter, usePrometheus, namespace, allNamespaces, deploymentName, labelSelector)
 
 	ctx := context.Background()
 	var deployments []DeploymentMetrics
 
-	if usePorter {
+	if usePrometheus {
+		if prometheusURL == "" {
+			fmt.Fprintf(os.Stderr, "Error: Prometheus URL required. Set PROMETHEUS_URL env var or use --prometheus-url flag\n")
+			os.Exit(1)
+		}
+		if labelSelector != "" {
+			fmt.Fprintf(os.Stderr, "Warning: -l/--selector flag is not supported in Prometheus mode, ignoring\n")
+		}
+		if includeCronJobs {
+			fmt.Fprintf(os.Stderr, "Warning: --include-cronjobs flag is not supported in Prometheus mode, ignoring\n")
+		}
+		if nodeFilter != "" {
+			fmt.Fprintf(os.Stderr, "Warning: --node flag is not supported in Prometheus mode, ignoring\n")
+		}
+		if outputType == OutputTypeCombined {
+			fmt.Fprintf(os.Stderr, "Error: --output combined is not supported in Prometheus mode (no current-snapshot data)\n")
+			os.Exit(1)
+		}
+
+		if allNamespaces {
+			namespace = ""
+		}
+
+		promClient := &PrometheusClient{
+			BaseURL:    prometheusURL,
+			HTTPClient: &http.Client{},
+			Debug:      debug,
+		}
+
+		var err error
+		deployments, err = getPrometheusDeploymentMetrics(ctx, promClient, namespace, deploymentName, prometheusWindow)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting Prometheus metrics: %v\n", err)
+			os.Exit(1)
+		}
+	} else if usePorter {
 		if porterToken == "" {
 			fmt.Fprintf(os.Stderr, "Error: Porter token required. Set PORTER_TOKEN env var or use --porter-token flag\n")
 			os.Exit(1)
@@ -142,10 +183,22 @@ func runCLI() {
 		}
 	}
 
-	printResults(deployments, outputType, usePorter, totalOnly, format)
+	sourceMode := "k8s"
+	if usePorter {
+		sourceMode = "porter"
+	} else if usePrometheus {
+		sourceMode = "prometheus"
+	}
+
+	printResults(deployments, outputType, sourceMode, totalOnly, format)
 }
 
-func validateFlags(usePorter bool, namespace string, allNamespaces bool, deploymentName string, labelSelector string) {
+func validateFlags(usePorter, usePrometheus bool, namespace string, allNamespaces bool, deploymentName string, labelSelector string) {
+	if usePorter && usePrometheus {
+		fmt.Fprintf(os.Stderr, "Error: --porter and --prometheus flags are mutually exclusive\n")
+		os.Exit(1)
+	}
+
 	if namespace != "" && allNamespaces {
 		fmt.Fprintf(os.Stderr, "Error: --namespace and -A/--all-namespaces flags are mutually exclusive\n")
 		os.Exit(1)
