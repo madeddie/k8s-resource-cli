@@ -44,7 +44,7 @@ func runCLI() {
 	}
 
 	flag.BoolVar(&showVersion, "version", false, "Show version and exit")
-	flag.StringVar(&outputType, "output", OutputTypeRequests, "Output type: usage, requests, or max-requests")
+	flag.StringVar(&outputType, "output", OutputTypeRequests, "Output type: usage, requests, max-requests, or combined")
 	flag.StringVar(&namespace, "namespace", "", "Namespace (defaults to current context or 'default')")
 	flag.StringVar(&deploymentName, "deployment", "", "Deployment name (defaults to all deployments)")
 	flag.StringVar(&kubeconfig, "kubeconfig", defaultKubeconfig, "Path to kubeconfig file")
