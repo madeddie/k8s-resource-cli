@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -88,17 +89,13 @@ func getDeploymentMetrics(ctx context.Context, clientset *kubernetes.Clientset, 
 		podNames[pod.Name] = struct{}{}
 	}
 
-	// Calculate requests from pod specs
-	for _, pod := range pods.Items {
-		for _, container := range pod.Spec.Containers {
-			if cpu := container.Resources.Requests.Cpu(); cpu != nil {
-				dm.Requests.CPU += cpu.MilliValue()
-			}
-			if memory := container.Resources.Requests.Memory(); memory != nil {
-				dm.Requests.Memory += memory.Value()
-			}
-		}
-	}
+	// Calculate per-pod requests from the deployment's pod template.
+	// Using the template (rather than iterating over running pods) keeps the
+	// request totals accurate even when the deployment is mid-scale-up or
+	// mid-scale-down and only some pods are currently scheduled.
+	requestsPerPod := requestsFromPodSpec(deployment.Spec.Template.Spec.Containers)
+	dm.Requests.CPU = requestsPerPod.CPU * int64(dm.DesiredReplicas)
+	dm.Requests.Memory = requestsPerPod.Memory * int64(dm.DesiredReplicas)
 
 	// Get current usage from metrics API
 	podMetricsList, err := metricsClientset.MetricsV1beta1().PodMetricses(namespace).List(ctx, metav1.ListOptions{
@@ -133,12 +130,7 @@ func getDeploymentMetrics(ctx context.Context, clientset *kubernetes.Clientset, 
 			if hpa.Spec.ScaleTargetRef.Name == name && hpa.Spec.ScaleTargetRef.Kind == "Deployment" {
 				dm.MaxReplicas = hpa.Spec.MaxReplicas
 				// Calculate max requests based on HPA max replicas
-				if dm.MaxReplicas > dm.DesiredReplicas && len(pods.Items) > 0 {
-					// Get requests per pod (average from current pods)
-					requestsPerPod := ResourceMetrics{
-						CPU:    dm.Requests.CPU / int64(len(pods.Items)),
-						Memory: dm.Requests.Memory / int64(len(pods.Items)),
-					}
+				if dm.MaxReplicas > dm.DesiredReplicas {
 					dm.MaxRequests.CPU = requestsPerPod.CPU * int64(dm.MaxReplicas)
 					dm.MaxRequests.Memory = requestsPerPod.Memory * int64(dm.MaxReplicas)
 				}
@@ -227,4 +219,21 @@ func getCronJobMetrics(ctx context.Context, clientset *kubernetes.Clientset, met
 	dm.MaxRequests.Memory = dm.Requests.Memory
 
 	return dm, nil
+}
+
+// requestsFromPodSpec sums the per-pod CPU (millicores) and memory (bytes)
+// requests across all containers in a pod spec. Containers with no requests
+// set contribute zero. Exposed as a helper so the deployment-request math can
+// be unit-tested without standing up a Kubernetes API.
+func requestsFromPodSpec(containers []corev1.Container) ResourceMetrics {
+	var out ResourceMetrics
+	for _, container := range containers {
+		if cpu := container.Resources.Requests.Cpu(); cpu != nil {
+			out.CPU += cpu.MilliValue()
+		}
+		if memory := container.Resources.Requests.Memory(); memory != nil {
+			out.Memory += memory.Value()
+		}
+	}
+	return out
 }

@@ -40,7 +40,8 @@ func printResults(deployments []DeploymentMetrics, outputType string, usePorter 
 
 		switch outputType {
 		case OutputTypeUsage, OutputTypeRequests, OutputTypeCombined:
-			replicas = fmt.Sprintf("%d/%d", dm.CurrentReplicas, dm.MaxReplicas)
+			// current/desired — MaxReplicas only appears in OutputTypeMaxRequests
+			replicas = fmt.Sprintf("%d/%d", dm.CurrentReplicas, dm.DesiredReplicas)
 		case OutputTypeMaxRequests:
 			replicas = fmt.Sprintf("%d", dm.MaxReplicas)
 		}
