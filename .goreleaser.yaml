@@ -47,15 +47,15 @@ homebrew_casks:
       owner: madeddie
       name: homebrew-private
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    # Homebrew deprecated `postflight`; use `custom_block` to inject the new
-    # `postflight_steps` stanza. (GoReleaser pre-v2.19 only emits `postflight`.)
-    # See https://github.com/goreleaser/goreleaser/issues/6870
-    custom_block: |
-      postflight_steps do
-      on_macos do
-      run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/k8s-resource-cli"]
-      end
-      end
+    # Remove the macOS quarantine attribute after install. GoReleaser renders
+    # this into a standard `postflight do ... end` block, where `staged_path`
+    # is valid (unlike the newer `postflight_steps`/`on_macos` DSL).
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/k8s-resource-cli"]
+          end
     homepage: https://github.com/madeddie/k8s-resource-cli
     description: CLI tool to retrieve resource requests and usage metrics for Kubernetes deployments and cronjobs
     license: MIT
